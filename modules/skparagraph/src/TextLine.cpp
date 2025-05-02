@@ -1205,8 +1205,10 @@ void TextLine::getRectsForRange(TextRange textRange0,
                 case RectHeightStyle::kMax:
                     // TODO: Change it once flutter rolls into google3
                     //  (probably will break things if changed before)
-                    clip.fBottom = this->height();
-                    clip.fTop = this->sizes().delta();
+                    // clip.fBottom = this->height();
+                    // clip.fTop = this->sizes().delta();
+                    clip.fTop = this->baseline() + this->fMaxRunMetrics.ascent();
+                    clip.fBottom = this->baseline() + this->fMaxRunMetrics.descent();
                     break;
                 case RectHeightStyle::kIncludeLineSpacingTop: {
                     clip.fBottom = this->height();
