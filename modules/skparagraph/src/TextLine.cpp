@@ -1202,7 +1202,7 @@ void TextLine::getRectsForRange(TextRange textRange0,
             clip.offset(lineContext.fTextShift - context.fTextShift, 0);
 
             switch (rectHeightStyle) {
-                case RectHeightStyle::kMax:
+                case RectHeightStyle::kMax: {
                     // TODO: Change it once flutter rolls into google3
                     //  (probably will break things if changed before)
                     // clip.fBottom = this->height();
@@ -1215,7 +1215,8 @@ void TextLine::getRectsForRange(TextRange textRange0,
                     const auto effectiveBaseline = this->baseline() + this->sizes().delta();
                     clip.fTop = effectiveBaseline + run->ascent();
                     clip.fBottom = effectiveBaseline + run->descent();
-                    break;
+                }
+                break;
                 case RectHeightStyle::kIncludeLineSpacingTop: {
                     clip.fBottom = this->height();
                     clip.fTop = this->sizes().delta();
