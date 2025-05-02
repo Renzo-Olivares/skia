@@ -1207,8 +1207,14 @@ void TextLine::getRectsForRange(TextRange textRange0,
                     //  (probably will break things if changed before)
                     // clip.fBottom = this->height();
                     // clip.fTop = this->sizes().delta();
-                    clip.fTop = this->baseline() + this->fMaxRunMetrics.ascent();
-                    clip.fBottom = this->baseline() + this->fMaxRunMetrics.descent();
+                    // clip.fTop = this->baseline() + this->fMaxRunMetrics.ascent();
+                    // clip.fBottom = this->baseline() + this->fMaxRunMetrics.descent();
+                    if (run->fHeightMultiplier <= 0) {
+                        break;
+                    }
+                    const auto effectiveBaseline = this->baseline() + this->sizes().delta();
+                    clip.fTop = effectiveBaseline + run->ascent();
+                    clip.fBottom = effectiveBaseline + run->descent();
                     break;
                 case RectHeightStyle::kIncludeLineSpacingTop: {
                     clip.fBottom = this->height();
