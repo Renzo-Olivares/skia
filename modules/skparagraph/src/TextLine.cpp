@@ -153,7 +153,7 @@ TextLine::TextLine(ParagraphImpl* owner,
         auto& run = fOwner->run(runIndex);
         runLevels[runLevelsIndex++] = run.fBidiLevel;
         fMaxRunMetrics.add(
-            InternalLineMetrics(run.correctAscent(), run.correctDescent(), run.fFontMetrics.fLeading));
+            InternalLineMetrics(run.correctAscent(), run.correctDescent(), 0.0f));
         if (run.isPlaceholder()) {
             placeholdersInOriginalOrder.push_back(runIndex);
         }
@@ -1225,8 +1225,8 @@ void TextLine::getRectsForRange(TextRange textRange0,
                         break;
                     }
                     const auto effectiveBaseline = this->baseline() + this->sizes().delta();
-                    clip.fTop = effectiveBaseline + this->fSizes.ascent();
-                    clip.fBottom = effectiveBaseline + this->fSizes.descent();
+                    clip.fTop = effectiveBaseline + this->fMaxRunMetrics.ascent();
+                    clip.fBottom = effectiveBaseline + this->fMaxRunMetrics.descent();
                 }
                 break;
                 case RectHeightStyle::kIncludeLineSpacingTop: {
