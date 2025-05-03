@@ -1225,8 +1225,8 @@ void TextLine::getRectsForRange(TextRange textRange0,
                         break;
                     }
                     const auto effectiveBaseline = this->baseline() + this->sizes().delta();
-                    clip.fTop = effectiveBaseline + this->fMaxRunMetrics.ascent();
-                    clip.fBottom = effectiveBaseline + this->fMaxRunMetrics.descent();
+                    clip.fTop = effectiveBaseline + this->fSizes.ascent();
+                    clip.fBottom = effectiveBaseline + this->fSizes.descent();
                 }
                 break;
                 case RectHeightStyle::kIncludeLineSpacingTop: {
