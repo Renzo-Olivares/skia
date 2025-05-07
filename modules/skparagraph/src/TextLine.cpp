@@ -153,7 +153,7 @@ TextLine::TextLine(ParagraphImpl* owner,
         auto& run = fOwner->run(runIndex);
         runLevels[runLevelsIndex++] = run.fBidiLevel;
         fMaxRunMetrics.add(
-            InternalLineMetrics(run.correctAscent(), run.correctDescent(), 0.0f));
+            InternalLineMetrics(run.ascent(), run.descent(), run.fFontMetrics.fLeading));
         if (run.isPlaceholder()) {
             placeholdersInOriginalOrder.push_back(runIndex);
         }
@@ -1211,22 +1211,22 @@ void TextLine::getRectsForRange(TextRange textRange0,
                     // clip.fTop = this->baseline() + this->fMaxRunMetrics.ascent();
                     // clip.fBottom = this->baseline() + this->fMaxRunMetrics.descent();
                     //
-                    // if (run->fHeightMultiplier <= 0) {
-                    //     break;
-                    // }
-                    // const auto effectiveBaseline = this->baseline() + this->sizes().delta();
-                    // clip.fTop = effectiveBaseline + run->ascent();
-                    // clip.fBottom = effectiveBaseline + run->descent();
-                    //
-                    // clip.fTop = this->baseline() + this->fMaxRunMetrics.rawAscent();
-                    // clip.fBottom = this->baseline() + this->fMaxRunMetrics.rawDescent();
-                    //
                     if (run->fHeightMultiplier <= 0) {
                         break;
                     }
                     const auto effectiveBaseline = this->baseline() + this->sizes().delta();
                     clip.fTop = effectiveBaseline + this->fMaxRunMetrics.ascent();
                     clip.fBottom = effectiveBaseline + this->fMaxRunMetrics.descent();
+                    //
+                    // clip.fTop = this->baseline() + this->fMaxRunMetrics.rawAscent();
+                    // clip.fBottom = this->baseline() + this->fMaxRunMetrics.rawDescent();
+                    //
+                    // if (run->fHeightMultiplier <= 0) {
+                    //     break;
+                    // }
+                    // const auto effectiveBaseline = this->baseline() + this->sizes().delta();
+                    // clip.fTop = effectiveBaseline + this->fSizes.ascent();
+                    // clip.fBottom = effectiveBaseline + this->fSizes.descent();
                 }
                 break;
                 case RectHeightStyle::kIncludeLineSpacingTop: {
