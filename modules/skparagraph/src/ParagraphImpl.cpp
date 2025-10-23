@@ -421,14 +421,16 @@ void ParagraphImpl::applySpacingAndBuildClusterTable() {
         fTextStyles[0].fRange.width() == fText.size() && fRuns.size() == 1) {
         // We have to letter space the entire paragraph (second most common case)
         auto& run = fRuns[0];
-        auto& style = fTextStyles[0].fStyle;
-        run.addSpacesEvenly(style.getLetterSpacing());
-        this->buildClusterTable();
-        // This is something Flutter requires
-        for (auto& cluster : fClusters) {
-            cluster.setHalfLetterSpacing(style.getLetterSpacing()/2);
+        if (run.fScript != SkSetFourByteTag('a', 'r', 'a', 'b')) {
+            auto& style = fTextStyles[0].fStyle;
+            run.addSpacesEvenly(style.getLetterSpacing());
+            this->buildClusterTable();
+            // This is something Flutter requires
+            for (auto& cluster : fClusters) {
+                cluster.setHalfLetterSpacing(style.getLetterSpacing()/2);
+            }
+            return;
         }
-        return;
     }
 
     // The complex case: many text styles with spacing (possibly not adjusted to glyphs)
@@ -485,7 +487,7 @@ void ParagraphImpl::applySpacingAndBuildClusterTable() {
                 }
             }
             // Process letter spacing
-            if (currentStyle->fStyle.getLetterSpacing() != 0) {
+            if (currentStyle->fStyle.getLetterSpacing() != 0 && run.fScript != SkSetFourByteTag('a', 'r', 'a', 'b')) {
                 shift += run.addSpacesEvenly(currentStyle->fStyle.getLetterSpacing(), cluster);
             }
 

@@ -201,6 +201,7 @@ void OneLineShaper::finish(const Block& block, SkScalar height, SkScalar& advanc
         const SkShaper::RunHandler::RunInfo info = {
                 run->fFont,
                 run->fBidiLevel,
+                run->fScript,
                 runAdvance,
                 glyphs.width(),
                 SkShaper::RunHandler::Range(text.start - run->fClusterStart, text.width())

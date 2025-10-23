@@ -212,6 +212,7 @@ private:
 
     bool fEllipsis;
     uint8_t fBidiLevel;
+    SkFourByteTag fScript;
 };
 
 template<typename Visitor>
