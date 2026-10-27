@@ -926,6 +926,9 @@ var gniExportDescs = []exporter.GNIExportDesc{
 		{Var: "skparagraph_core_sources",
 			Rules: []string{
 				"//modules/skparagraph/src:srcs"}},
+		{Var: "skparagraph_coretext_sources",
+			Rules: []string{
+				"//modules/skparagraph/src:coretext_srcs"}},
 		{Var: "skparagraph_utils",
 			Rules: []string{
 				"//modules/skparagraph/utils:utils_hdrs",
@@ -936,6 +939,9 @@ var gniExportDescs = []exporter.GNIExportDesc{
 				"//modules/skparagraph/tests:tests_hdrs",
 				"//modules/skparagraph/tests:tests_srcs",
 			}},
+		{Var: "skparagraph_coretext_tests",
+			Rules: []string{
+				"//modules/skparagraph/tests:coretext_tests"}},
 		// TODO(kjlubick) remove after updating flutter
 		{Var: "skparagraph_public",
 			Rules: []string{

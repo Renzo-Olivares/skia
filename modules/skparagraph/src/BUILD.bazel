@@ -36,3 +36,13 @@ skia_filegroup(
     ],
     visibility = ["//modules/skparagraph:__pkg__"],
 )
+
+# In own group for export to //modules/skparagraph/skparagraph.gni:skparagraph_coretext_sources.
+skia_filegroup(
+    name = "coretext_srcs",
+    srcs = [
+        "CoreTextIndexMap.cpp",
+        "CoreTextIndexMap.h",
+    ],
+    visibility = ["//modules/skparagraph:__pkg__"],
+)

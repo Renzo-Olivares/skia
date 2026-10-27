@@ -1,4 +1,4 @@
-load("//bazel:skia_rules.bzl", "split_srcs_and_hdrs")
+load("//bazel:skia_rules.bzl", "skia_filegroup", "split_srcs_and_hdrs")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -16,4 +16,13 @@ TESTS_FILES = [
 split_srcs_and_hdrs(
     name = "tests",
     files = TESTS_FILES,
+)
+
+# In own group for export to //modules/skparagraph/skparagraph.gni:skparagraph_coretext_tests.
+skia_filegroup(
+    name = "coretext_tests",
+    srcs = [
+        "CoreTextPipelineTest.cpp",
+    ],
+    visibility = ["//modules/skparagraph:__pkg__"],
 )

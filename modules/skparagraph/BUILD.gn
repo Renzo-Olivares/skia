@@ -10,12 +10,16 @@ declare_args() {
   paragraph_gms_enabled = true
   paragraph_tests_enabled = true
   paragraph_bench_enabled = true
+  skia_use_coretext_paragraph = skia_use_fonthost_mac
 }
 
 if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
     skia_use_harfbuzz) {
   config("public_config") {
     defines = [ "SK_ENABLE_PARAGRAPH" ]
+    if (skia_use_coretext_paragraph) {
+      defines += [ "SK_PARAGRAPH_NATIVE_CORETEXT" ]
+    }
     include_dirs = [
       "include",
       "utils",
@@ -27,6 +31,14 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
     public_configs = [ ":public_config" ]
     public = skparagraph_core_public
     sources = skparagraph_core_sources
+    if (skia_use_coretext_paragraph) {
+      sources += skparagraph_coretext_sources
+      frameworks = [
+        "CoreFoundation.framework",
+        "CoreGraphics.framework",
+        "CoreText.framework",
+      ]
+    }
     public_deps = [
       "../..:skia",
       "../skunicode",
@@ -76,6 +88,10 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
             (skia_use_icu || skia_use_libgrapheme || skia_use_icu4x)) {
           testonly = true
           sources = skparagraph_tests
+          if (skia_use_coretext_paragraph &&
+              (skia_use_apple_unicode || skia_use_icu)) {
+            sources += skparagraph_coretext_tests
+          }
           deps = [
             ":skparagraph",
             ":utils",
