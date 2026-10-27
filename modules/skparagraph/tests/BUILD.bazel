@@ -23,6 +23,8 @@ skia_filegroup(
     name = "coretext_tests",
     srcs = [
         "CoreTextPipelineTest.cpp",
+        "SkParagraphFlutterBugsTest.cpp",
+        "SkParagraphSkiaBugsTest.cpp",
     ],
     visibility = ["//modules/skparagraph:__pkg__"],
 )
