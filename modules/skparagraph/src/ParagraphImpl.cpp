@@ -14,7 +14,9 @@
 #include "modules/skparagraph/include/ParagraphPainter.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
 #include "modules/skparagraph/src/OneLineShaper.h"
+#endif
 #if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
 #include "modules/skparagraph/src/CoreTextFontRegistry.h"
 #include "modules/skparagraph/src/CoreTextLineShaper.h"
@@ -760,14 +762,21 @@ bool ParagraphImpl::shapeTextIntoEndlessLine() {
             this->applySpacingAndBuildClusterTable();
             return true;
         }
+#if defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
+        // Only CoreFoundation allocation failures are left once empty text and zero font
+        // sizes are handled, and returning false would pass for a valid empty paragraph
+        SK_ABORT("CoreText typesetting failed and skia_use_harfbuzz=false leaves no fallback");
+#else
         // A typesetter failure in a later region leaves the runs of earlier regions behind,
         // and OneLineShaper appends rather than resets
         fRuns.clear();
         fUnresolvedCodepoints.reset();
         fFontSwitches.clear();
+#endif
     }
 #endif
 
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
     OneLineShaper oneLineShaper(this);
     auto result = oneLineShaper.shape();
     fUnresolvedGlyphs = oneLineShaper.unresolvedGlyphs();
@@ -777,6 +786,12 @@ bool ParagraphImpl::shapeTextIntoEndlessLine() {
     this->applySpacingAndBuildClusterTable();
 
     return result;
+#else
+    // Laying out nothing would look like an empty paragraph instead of a misconfigured client
+    SK_ABORT(
+            "TextShapingEngine::kDefault needs HarfBuzz; a skia_use_harfbuzz=false build "
+            "only lays out TextShapingEngine::kCoreText paragraphs");
+#endif
 }
 
 void ParagraphImpl::breakShapedTextIntoLines(SkScalar maxWidth) {

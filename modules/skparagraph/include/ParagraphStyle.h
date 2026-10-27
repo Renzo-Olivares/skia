@@ -19,7 +19,7 @@ namespace skia {
 namespace textlayout {
 
 enum class TextShapingEngine : uint8_t {
-    // HarfBuzz
+    // HarfBuzz; layout aborts on it in a skia_use_harfbuzz=false build
     kDefault = 0,
     kCoreText = 1,
 };

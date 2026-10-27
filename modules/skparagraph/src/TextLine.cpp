@@ -23,7 +23,9 @@
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skparagraph/src/ParagraphPainterImpl.h"
 #include "modules/skshaper/include/SkShaper.h"
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
 #include "modules/skshaper/include/SkShaper_harfbuzz.h"
+#endif
 #if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
 #include "modules/skparagraph/src/CoreTextLineShaper.h"
 #endif
@@ -827,6 +829,10 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
     }
 #endif
 
+#if defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
+    // Every paragraph that reaches line breaking without HarfBuzz was shaped by CoreText
+    SK_ABORT("Ellipsis shaping of a non-CoreText paragraph needs HarfBuzz");
+#else
     auto shaped = [&](sk_sp<SkTypeface> typeface, sk_sp<SkFontMgr> fallback) -> std::unique_ptr<Run> {
         ShapeHandler handler(
                 run.heightMultiplier(), run.useHalfLeading(), run.baselineShift(), ellipsis);
@@ -908,6 +914,7 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
       }
     }
     return ellipsisRun;
+#endif
 }
 
 TextLine::ClipContext TextLine::measureTextInsideOneRun(TextRange textRange,

@@ -5,7 +5,9 @@
 #include "include/private/SkMutex.h"
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/src/ParagraphImpl.h"
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
 #include "modules/skshaper/include/SkShaper_harfbuzz.h"
+#endif
 #include "src/core/SkLRUCache.h"
 #include "src/core/SkTHash.h"
 
@@ -460,7 +462,10 @@ void FontCollection::clearCaches() {
         fVariationCache->fTypefaces.reset();
     }
     fFallbackCache->reset();
+    // CoreText-only builds link no HarfBuzz and hold no HarfBuzz face cache to purge
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
     SkShapers::HB::PurgeCaches();
+#endif
 }
 
 }  // namespace textlayout

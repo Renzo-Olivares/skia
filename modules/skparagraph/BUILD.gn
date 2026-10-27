@@ -14,11 +14,14 @@ declare_args() {
 }
 
 if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
-    skia_use_harfbuzz) {
+    (skia_use_harfbuzz || skia_use_coretext_paragraph)) {
   config("public_config") {
     defines = [ "SK_ENABLE_PARAGRAPH" ]
     if (skia_use_coretext_paragraph) {
       defines += [ "SK_PARAGRAPH_NATIVE_CORETEXT" ]
+    }
+    if (!skia_use_harfbuzz) {
+      defines += [ "SK_PARAGRAPH_DISABLE_HARFBUZZ" ]
     }
     include_dirs = [
       "include",
@@ -37,6 +40,13 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
         "CoreFoundation.framework",
         "CoreGraphics.framework",
         "CoreText.framework",
+      ]
+    }
+    if (!skia_use_harfbuzz) {
+      # OneLineShaper is the HarfBuzz shaper; CoreText-only builds lay out kCoreText alone
+      sources -= [
+        "//modules/skparagraph/src/OneLineShaper.cpp",
+        "//modules/skparagraph/src/OneLineShaper.h",
       ]
     }
     public_deps = [
@@ -63,7 +73,8 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
     }
 
     skia_source_set("gm") {
-      if (paragraph_gms_enabled &&
+      # Paragraph GMs lay out kDefault paragraphs, which abort when HarfBuzz is disabled
+      if (paragraph_gms_enabled && skia_use_harfbuzz &&
           (skia_use_icu || skia_use_libgrapheme || skia_use_icu4x)) {
         testonly = true
         sources = [
@@ -85,12 +96,18 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
     if (skia_enable_tools) {
       skia_source_set("tests") {
         if (paragraph_tests_enabled &&
-            (skia_use_icu || skia_use_libgrapheme || skia_use_icu4x)) {
+            (skia_use_icu || skia_use_libgrapheme || skia_use_icu4x ||
+             skia_use_apple_unicode)) {
           testonly = true
           sources = skparagraph_tests
           if (skia_use_coretext_paragraph &&
               (skia_use_apple_unicode || skia_use_icu)) {
             sources += skparagraph_coretext_tests
+          }
+          if (!skia_use_harfbuzz ||
+              !(skia_use_icu || skia_use_libgrapheme || skia_use_icu4x)) {
+            # SkParagraphTest lays out kDefault paragraphs with ICU, libgrapheme, or ICU4X
+            sources -= [ "//modules/skparagraph/tests/SkParagraphTest.cpp" ]
           }
           deps = [
             ":skparagraph",
@@ -107,7 +124,8 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
     }
 
     skia_source_set("bench") {
-      if (paragraph_bench_enabled &&
+      # ParagraphBench lays out kDefault paragraphs, which abort when HarfBuzz is disabled
+      if (paragraph_bench_enabled && skia_use_harfbuzz &&
           (skia_use_icu || skia_use_libgrapheme || skia_use_icu4x)) {
         testonly = true
         sources = [ "bench/ParagraphBench.cpp" ]
@@ -123,7 +141,8 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
     }
 
     skia_source_set("slides") {
-      if (skia_use_icu || skia_use_libgrapheme) {
+      # ParagraphSlide and ParagraphBugsSlide compare against kDefault HarfBuzz shaping
+      if (skia_use_harfbuzz && (skia_use_icu || skia_use_libgrapheme)) {
         testonly = true
         sources = [ "slides/ParagraphSlide.cpp" ]
         deps = [
