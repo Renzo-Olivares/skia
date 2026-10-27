@@ -119,6 +119,7 @@ public:
         , fBidiRegions(paragraph->fBidiRegions)
         , fHasLineBreaks(paragraph->fHasLineBreaks)
         , fHasWhitespacesInside(paragraph->fHasWhitespacesInside)
+        , fCoreTextShaped(paragraph->fCoreTextShaped)
         , fTrailingSpaces(paragraph->fTrailingSpaces)
         , fFontSwitches(paragraph->fFontSwitches) { }
 
@@ -138,6 +139,7 @@ public:
     std::vector<SkUnicode::BidiRegion> fBidiRegions;
     bool fHasLineBreaks;
     bool fHasWhitespacesInside;
+    bool fCoreTextShaped;
     TextIndex fTrailingSpaces;
     // Reported through ParagraphImpl::resolvedFonts()
     TArray<ResolvedFontDescriptor> fFontSwitches;
@@ -204,6 +206,7 @@ uint32_t ParagraphCacheKey::computeHash() const {
     hash = mix(hash, SkGoodHash()(fParagraphStyle.getReplaceTabCharacters() ? 1 : 0));
     hash = mix(hash, SkGoodHash()(fParagraphStyle.fakeMissingFontStyles() ? 1 : 0));
     hash = mix(hash, SkGoodHash()(fParagraphStyle.getLetterSpacingByCSSSpec() ? 1 : 0));
+    hash = mix(hash, SkGoodHash()(static_cast<uint8_t>(fParagraphStyle.getTextShapingEngine())));
 
     auto& strutStyle = fParagraphStyle.getStrutStyle();
     if (strutStyle.getStrutEnabled()) {
@@ -263,6 +266,10 @@ bool ParagraphCacheKey::operator==(const ParagraphCacheKey& other) const {
     // Letter spacing is applied to the cached runs
     if (fParagraphStyle.getLetterSpacingByCSSSpec() !=
         other.fParagraphStyle.getLetterSpacingByCSSSpec()) {
+        return false;
+    }
+
+    if (fParagraphStyle.getTextShapingEngine() != other.fParagraphStyle.getTextShapingEngine()) {
         return false;
     }
 
@@ -337,6 +344,7 @@ void ParagraphCache::updateTo(ParagraphImpl* paragraph, const Entry* entry) {
     paragraph->fHasWhitespacesInside = entry->fValue->fHasWhitespacesInside;
     paragraph->fTrailingSpaces = entry->fValue->fTrailingSpaces;
     paragraph->fFontSwitches = entry->fValue->fFontSwitches;
+    paragraph->fCoreTextShaped = entry->fValue->fCoreTextShaped;
     for (auto& run : paragraph->fRuns) {
         run.setOwner(paragraph);
     }

@@ -29,6 +29,7 @@ ParagraphStyle::ParagraphStyle() {
     fHintingIsOn = true;
     fReplaceTabCharacters = false;
     fFakeMissingFontStyles = true;
+    fTextShapingEngine = TextShapingEngine::kDefault;
 }
 
 void ParagraphStyle::setSoftHyphenString(const std::u16string& value) {

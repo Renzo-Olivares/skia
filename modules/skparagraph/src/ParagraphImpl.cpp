@@ -15,6 +15,10 @@
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skparagraph/src/OneLineShaper.h"
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+#include "modules/skparagraph/src/CoreTextFontRegistry.h"
+#include "modules/skparagraph/src/CoreTextLineShaper.h"
+#endif
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skparagraph/src/ParagraphPainterImpl.h"
 #include "modules/skparagraph/src/Run.h"
@@ -91,6 +95,7 @@ ParagraphImpl::ParagraphImpl(const SkString& text,
         , fUnicode(std::move(unicode))
         , fHasLineBreaks(false)
         , fHasWhitespacesInside(false)
+        , fCoreTextShaped(false)
         , fTrailingSpaces(0)
 {
     SkASSERT(fUnicode);
@@ -421,18 +426,46 @@ void ParagraphImpl::applySpacingAndBuildClusterTable() {
         return;
     }
 
+    // CoreText shapes each hard-break segment in its own CTLine, so text that HarfBuzz shapes
+    // as one run comes as one run per segment. Spacing these runs as one keeps the cluster widths
+    // HarfBuzz takes from spaced positions; the per-cluster path below rounds them differently
+    auto oneRunButForHardBreaks = [this]() {
+        for (int i = 1; i < fRuns.size(); ++i) {
+            const Run& prev = fRuns[i - 1];
+            const Run& run = fRuns[i];
+            if (!fCoreTextShaped || prev.isPlaceholder() || run.isPlaceholder() ||
+                prev.textRange().end != run.textRange().start ||
+                fText[prev.textRange().end - 1] != '\n' || !(prev.font() == run.font()) ||
+                prev.bidiLevel() != run.bidiLevel() || prev.script() != run.script()) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     // Simple case: we have to letter space the entire paragraph (second most common case)
     // With one exception (there are whitespaces, and we have to space them as CSS spec requires)
     // which is treated as a common case down below
     if (letterSpacingStyles == 1 && !hasWordSpacing && fTextStyles.size() == 1 &&
-        fTextStyles[0].fRange.width() == fText.size() && fRuns.size() == 1 &&
+        fTextStyles[0].fRange.width() == fText.size() && !fRuns.empty() &&
+        oneRunButForHardBreaks() &&
         !(this->fHasWhitespacesInside && this->fParagraphStyle.getLetterSpacingByCSSSpec())
         ) {
-        auto& run = fRuns[0];
         auto& style = fTextStyles[0].fStyle;
-        if (!run.isCursiveScript()) {
+        if (!fRuns[0].isCursiveScript()) {
             // Do not apply letter spacing for script languages (no exception here)
-            run.addLetterSpacesEvenly(style.getLetterSpacing());
+            if (fCoreTextShaped) {
+                // Runs carry the shift on as HarfBuzz's single run does, so LTR lines match
+                // KEEPER-DEBT: HarfBuzz's RTL run puts the last line first, so spaced RTL lines can
+                // differ in the last bit. Remove once HardBreak_LetterSpacedLinesExactlyAsHarfBuzz
+                // asserts RTL line widths instead of logging them
+                SkScalar shift = 0;
+                for (auto& run : fRuns) {
+                    shift = run.addLetterSpacesAfterGraphemes(style.getLetterSpacing(), shift);
+                }
+            } else {
+                fRuns[0].addLetterSpacesEvenly(style.getLetterSpacing());
+            }
         }
 
         this->buildClusterTable();
@@ -500,12 +533,35 @@ void ParagraphImpl::applySpacingAndBuildClusterTable() {
             }
             // We do not apply letter spacing for script languages
             // except for one case (cluster is whitespace, and we have to follow CSS spec)
-            if ((currentStyle->fStyle.getLetterSpacing() != 0)) {
-                if (!run.isCursiveScript() ||
-                    (cluster->isWhitespaceBreak() &&
-                     this->fParagraphStyle.getLetterSpacingByCSSSpec())) {
-                    shift +=
-                        run.addLetterSpacesEvenly(currentStyle->fStyle.getLetterSpacing(), cluster);
+            SkScalar letterSpacing = currentStyle->fStyle.getLetterSpacing();
+            if (letterSpacing != 0 &&
+                (!run.isCursiveScript() ||
+                 (cluster->isWhitespaceBreak() &&
+                  this->fParagraphStyle.getLetterSpacingByCSSSpec()))) {
+                if (!fCoreTextShaped) {
+                    shift += run.addLetterSpacesEvenly(letterSpacing, cluster);
+                } else {
+                    // CoreText splits a grapheme into several clusters (base + combining mark,
+                    // Indic matra) where HarfBuzz merges them; spacing only after the visually
+                    // last cluster of the grapheme keeps the mark on its base. RTL runs visit
+                    // clusters in descending text order, so that cluster starts the grapheme
+                    const TextRange range = cluster->textRange();
+                    const bool graphemeEndsHere =
+                            run.leftToRight()
+                                    ? range.end == fText.size() ||
+                                              this->codeUnitHasProperty(
+                                                      range.end,
+                                                      SkUnicode::CodeUnitFlags::kGraphemeStart)
+                                    : this->codeUnitHasProperty(
+                                              range.start,
+                                              SkUnicode::CodeUnitFlags::kGraphemeStart);
+                    if (graphemeEndsHere) {
+                        shift += run.addLetterSpaceAfterCluster(letterSpacing, cluster);
+                    } else {
+                        // TextLine shifts a line by its first cluster's half spacing, which
+                        // must not depend on how CoreText split the grapheme
+                        cluster->setHalfLetterSpacing(letterSpacing / 2);
+                    }
                 }
             }
 
@@ -690,6 +746,27 @@ bool ParagraphImpl::shapeTextIntoEndlessLine() {
     // Release the set, do not clear it: a ParagraphCache entry may share it
     fUnresolvedCodepoints.reset();
     fFontSwitches.clear();
+    fCoreTextShaped = false;
+
+    // kCoreText is an opt-in that only exists on Apple builds; elsewhere, and when the
+    // typesetter fails, the text still has to be laid out, so both cases fall through to
+    // the HarfBuzz shaper instead of leaving the paragraph without runs
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    if (fParagraphStyle.getTextShapingEngine() == TextShapingEngine::kCoreText) {
+        CoreTextLineShaper shaper(this);
+        if (shaper.shape()) {
+            fUnresolvedGlyphs = shaper.unresolvedGlyphs();
+            fCoreTextShaped = true;
+            this->applySpacingAndBuildClusterTable();
+            return true;
+        }
+        // A typesetter failure in a later region leaves the runs of earlier regions behind,
+        // and OneLineShaper appends rather than resets
+        fRuns.clear();
+        fUnresolvedCodepoints.reset();
+        fFontSwitches.clear();
+    }
+#endif
 
     OneLineShaper oneLineShaper(this);
     auto result = oneLineShaper.shape();
@@ -819,13 +896,27 @@ void ParagraphImpl::formatLines(SkScalar maxWidth) {
     }
 }
 
+std::vector<sk_sp<SkTypeface>> ParagraphImpl::findTypefaces(
+        const std::vector<SkString>& familyNames,
+        SkFontStyle fontStyle,
+        const std::optional<FontArguments>& fontArgs) {
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    if (fParagraphStyle.getTextShapingEngine() == TextShapingEngine::kCoreText) {
+        return CoreTextFontRegistry::Instance().findTypefaces(
+                *fFontCollection, familyNames, fontStyle, fontArgs);
+    }
+#endif
+    return fFontCollection->findTypefaces(familyNames, fontStyle, fontArgs);
+}
+
 void ParagraphImpl::resolveStrut() {
     auto strutStyle = this->paragraphStyle().getStrutStyle();
     if (!strutStyle.getStrutEnabled() || strutStyle.getFontSize() < 0) {
         return;
     }
 
-    std::vector<sk_sp<SkTypeface>> typefaces = fFontCollection->findTypefaces(strutStyle.getFontFamilies(), strutStyle.getFontStyle(), std::nullopt);
+    std::vector<sk_sp<SkTypeface>> typefaces = this->findTypefaces(
+            strutStyle.getFontFamilies(), strutStyle.getFontStyle(), std::nullopt);
     if (typefaces.empty()) {
         SkDEBUGF("Could not resolve strut font\n");
         return;
@@ -1151,7 +1242,7 @@ void ParagraphImpl::computeEmptyMetrics() {
         textStyle = fTextStyles.back().fStyle;
     }
 
-    auto typefaces = fontCollection()->findTypefaces(
+    auto typefaces = this->findTypefaces(
       textStyle.getFontFamilies(), textStyle.getFontStyle(), textStyle.getFontArguments());
     auto typeface = typefaces.empty() ? nullptr : typefaces.front();
 

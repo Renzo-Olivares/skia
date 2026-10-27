@@ -24,6 +24,9 @@
 #include "modules/skparagraph/src/ParagraphPainterImpl.h"
 #include "modules/skshaper/include/SkShaper.h"
 #include "modules/skshaper/include/SkShaper_harfbuzz.h"
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+#include "modules/skparagraph/src/CoreTextLineShaper.h"
+#endif
 #include "modules/skshaper/include/SkShaper_skunicode.h"
 #include "modules/skunicode/include/SkUnicode.h"
 
@@ -801,6 +804,28 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
             bidiLevel = ltr ? SkBidiIterator::kRTL : SkBidiIterator::kLTR;
         }
     }
+
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    // The CoreText cascade performs the fallback the attempts below emulate, and the default
+    // font manager they consult must stay out of CoreText paragraphs
+    if (owner->isCoreTextShaped()) {
+        ShapeHandler handler(
+                run.heightMultiplier(), run.useHalfLeading(), run.baselineShift(), ellipsis);
+        CoreTextLineShaper::ShapeAffix(ellipsis,
+                                       textStyle,
+                                       run.fFont.refTypeface(),
+                                       owner->paragraphStyle().fakeMissingFontStyles(),
+                                       bidiLevel,
+                                       owner->fontCollection(),
+                                       &handler);
+        auto ellipsisRun = handler.run();
+        if (ellipsisRun) {
+            ellipsisRun->fTextRange = TextRange(0, ellipsis.size());
+            ellipsisRun->fOwner = owner;
+        }
+        return ellipsisRun;
+    }
+#endif
 
     auto shaped = [&](sk_sp<SkTypeface> typeface, sk_sp<SkFontMgr> fallback) -> std::unique_ptr<Run> {
         ShapeHandler handler(

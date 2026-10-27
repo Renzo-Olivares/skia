@@ -12905,3 +12905,29 @@ DEF_TEST(SkParagraph_LigatureWithUnresolvedMark, reporter) {
         }
     }
 }
+
+#if !defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+// Where CoreText is not built, a kCoreText request still lays out through HarfBuzz instead of
+// leaving the paragraph without runs
+DEF_TEST(CoreTextPipeline_DisabledFallbackToHarfBuzz, reporter) {
+    sk_sp<ResourceFontCollection> fontCollection = sk_make_sp<ResourceFontCollection>();
+    SKIP_IF_FONTS_NOT_FOUND(reporter, fontCollection)
+
+    TextStyle style;
+    style.setFontFamilies({SkString("Roboto")});
+    style.setFontSize(16.0f);
+
+    ParagraphStyle paragraphStyle;
+    paragraphStyle.setTextShapingEngine(TextShapingEngine::kCoreText);
+    ParagraphBuilderImpl builder(paragraphStyle, fontCollection, get_unicode());
+    builder.pushStyle(style);
+    builder.addText("Fallback to HarfBuzz when CoreText is disabled");
+    builder.pop();
+    auto paragraph = builder.Build();
+    paragraph->layout(500.0f);
+
+    auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+    REPORTER_ASSERT(reporter, !impl->isCoreTextShaped());
+    REPORTER_ASSERT(reporter, paragraph->getMaxIntrinsicWidth() > 0);
+}
+#endif  // !defined(SK_PARAGRAPH_NATIVE_CORETEXT)

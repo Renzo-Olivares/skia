@@ -18,6 +18,12 @@
 namespace skia {
 namespace textlayout {
 
+enum class TextShapingEngine : uint8_t {
+    // HarfBuzz
+    kDefault = 0,
+    kCoreText = 1,
+};
+
 struct StrutStyle {
     StrutStyle();
 
@@ -86,7 +92,8 @@ struct ParagraphStyle {
                this->fReplaceTabCharacters == rhs.fReplaceTabCharacters &&
                this->fFakeMissingFontStyles == rhs.fFakeMissingFontStyles &&
                this->fRenderSoftHyphens == rhs.fRenderSoftHyphens &&
-               this->fSoftHyphenString == rhs.fSoftHyphenString;
+               this->fSoftHyphenString == rhs.fSoftHyphenString &&
+               this->fTextShapingEngine == rhs.fTextShapingEngine;
     }
 
     const StrutStyle& getStrutStyle() const { return fStrutStyle; }
@@ -148,6 +155,9 @@ struct ParagraphStyle {
     // Like setEllipsis, also accepts UTF-16. The string is stored as UTF-8.
     void setSoftHyphenString(const std::u16string& value);
 
+    TextShapingEngine getTextShapingEngine() const { return fTextShapingEngine; }
+    void setTextShapingEngine(TextShapingEngine engine) { fTextShapingEngine = engine; }
+
 private:
     StrutStyle fStrutStyle;
     TextStyle fDefaultTextStyle;
@@ -165,6 +175,7 @@ private:
     bool fLetterSpacingByCSSSpec = false;
     bool fRenderSoftHyphens = false;
     SkString fSoftHyphenString = SkString("-");
+    TextShapingEngine fTextShapingEngine = TextShapingEngine::kDefault;
 };
 }  // namespace textlayout
 }  // namespace skia
