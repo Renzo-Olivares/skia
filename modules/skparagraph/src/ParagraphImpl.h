@@ -254,6 +254,7 @@ private:
 
     friend class TextWrapper;
     friend class OneLineShaper;
+    friend class CoreTextLineShaper;
 
     void computeEmptyMetrics();
 

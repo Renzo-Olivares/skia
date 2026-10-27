@@ -27,6 +27,7 @@
 #include "modules/skparagraph/src/CoreTextAttrStringBuilder.h"
 #include "modules/skparagraph/src/CoreTextFontRegistry.h"
 #include "modules/skparagraph/src/CoreTextIndexMap.h"
+#include "modules/skparagraph/src/CoreTextLineShaper.h"
 #include "modules/skparagraph/src/ParagraphBuilderImpl.h"
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skparagraph/src/Run.h"
@@ -39,6 +40,12 @@
 #include "tests/Test.h"
 #include "tools/Resources.h"
 #include "tools/fonts/FontToolUtils.h"
+#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
+#include "modules/skunicode/include/SkUnicode_apple.h"
+#endif
+#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
+#include "modules/skunicode/include/SkUnicode_icu.h"
+#endif
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
@@ -51,6 +58,17 @@
 using namespace skia::textlayout;
 
 namespace {
+// CoreText clients ship Apple's SkUnicode; ICU stands in on builds that lack it
+sk_sp<SkUnicode> get_coretext_unicode() {
+#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
+    return SkUnicodes::Apple::Make();
+#elif defined(SK_UNICODE_ICU_IMPLEMENTATION)
+    return SkUnicodes::ICU::Make();
+#else
+    return nullptr;
+#endif
+}
+
 sk_sp<FontCollection> test_font_collection() {
     auto fontCollection = sk_make_sp<FontCollection>();
     fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
@@ -433,6 +451,367 @@ DEF_TEST(CoreTextPipeline_LineShapingAndBiDiLevels, reporter) {
     REPORTER_ASSERT(reporter, CTRunGetGlyphCount(run0) > 0);
     REPORTER_ASSERT(reporter, CTRunGetGlyphCount(run1) > 0);
     REPORTER_ASSERT(reporter, CTRunGetGlyphCount(run2) > 0);
+}
+
+// Marks, joiners, BiDi controls and variation selectors count as zero width, letters and
+// spaces do not, so a .notdef fallback run does not get a box for an invisible code point
+DEF_TEST(CoreTextPipeline_LineShaper_ZeroWidthCodepoints, reporter) {
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x00AD));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x0300));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x034F));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x036F));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x061C));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x1AB0));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x1DC0));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x200B));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x200D));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x202A));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x2060));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x2069));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0x20D0));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0xFE0F));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0xFE20));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0xFEFF));
+    REPORTER_ASSERT(reporter, CoreTextLineShaper::IsZeroWidthCodepoint(0xE0100));
+    REPORTER_ASSERT(reporter, !CoreTextLineShaper::IsZeroWidthCodepoint('A'));
+    REPORTER_ASSERT(reporter, !CoreTextLineShaper::IsZeroWidthCodepoint(' '));
+    REPORTER_ASSERT(reporter, !CoreTextLineShaper::IsZeroWidthCodepoint(0x206A));
+    REPORTER_ASSERT(reporter, !CoreTextLineShaper::IsZeroWidthCodepoint(0x3164));
+}
+
+// One-style Latin text becomes one LTR run over the whole text, with glyph, position and
+// cluster arrays sized as the HarfBuzz path sizes them, so TextLine can read either
+DEF_TEST(CoreTextPipeline_LineShaper_SinglePassShaping, reporter) {
+    ParagraphStyle paragraphStyle;
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+
+    ParagraphBuilderImpl builder(paragraphStyle, fontCollection, get_coretext_unicode());
+    TextStyle style;
+    style.setFontSize(16.0f);
+    builder.pushStyle(style);
+    const char* text = "Hello CoreText World";
+    size_t textLen = strlen(text);
+    builder.addText(text, textLen);
+    builder.pop();
+
+    auto paragraph = builder.Build();
+    auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+    REPORTER_ASSERT(reporter, impl->computeCodeUnitProperties());
+
+    CoreTextLineShaper shaper(impl);
+    REPORTER_ASSERT(reporter, shaper.shape());
+    REPORTER_ASSERT(reporter, shaper.unresolvedGlyphs() == 0);
+    REPORTER_ASSERT(reporter, impl->runs().size() == 1);
+
+    auto& run = impl->runs()[0];
+    REPORTER_ASSERT(reporter, run.textRange() == TextRange(0, textLen));
+    REPORTER_ASSERT(reporter, run.leftToRight());
+    REPORTER_ASSERT(reporter, run.bidiLevel() == 0);
+    REPORTER_ASSERT(reporter, run.script() == SkSetFourByteTag('L', 'a', 't', 'n'));
+    REPORTER_ASSERT(reporter, run.size() > 0);
+    REPORTER_ASSERT(reporter, run.glyphs().size() == run.size());
+    REPORTER_ASSERT(reporter, run.positions().size() == run.size() + 1);
+    REPORTER_ASSERT(reporter,
+                    run.offsets().empty() || run.offsets().size() == run.size());
+    REPORTER_ASSERT(reporter, run.clusterIndexes().size() == run.size() + 1);
+    REPORTER_ASSERT(reporter, run.advance().fX > 0.0f);
+    REPORTER_ASSERT(reporter, run.positions()[0].fX == 0.0f);
+    REPORTER_ASSERT(reporter,
+                    SkScalarNearlyEqual(run.positions()[run.size()].fX, run.advance().fX));
+    REPORTER_ASSERT(reporter, run.font().getSize() == 16.0f);
+    REPORTER_ASSERT(reporter, !run.isCursiveScript());
+    REPORTER_ASSERT(reporter, !impl->resolvedFonts().empty());
+    REPORTER_ASSERT(reporter, impl->resolvedFonts()[0].fTextStart == 0);
+
+    impl->buildClusterTable();
+    REPORTER_ASSERT(reporter, impl->clusters().size() > 1);
+}
+
+// Runs come out in logical order with the BiDi levels of the HarfBuzz path, including level 2
+// for LTR inside RTL; CTLine returns runs in visual order, so the shaper has to reorder them
+DEF_TEST(CoreTextPipeline_LineShaper_BiDiLogicalReordering, reporter) {
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+
+    // Logical run order must be strictly monotonically increasing across directional transitions
+    {
+        ParagraphStyle ltrStyle;
+        ltrStyle.setTextDirection(TextDirection::kLtr);
+        ParagraphBuilderImpl builder(ltrStyle, fontCollection, get_coretext_unicode());
+        TextStyle style;
+        style.setFontSize(14.0f);
+        builder.pushStyle(style);
+        const char* bidiText = "Hello سلام World";
+        builder.addText(bidiText, strlen(bidiText));
+        builder.pop();
+
+        auto paragraph = builder.Build();
+        auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+        REPORTER_ASSERT(reporter, impl->computeCodeUnitProperties());
+
+        CoreTextLineShaper shaper(impl);
+        REPORTER_ASSERT(reporter, shaper.shape());
+        REPORTER_ASSERT(reporter, impl->runs().size() >= 3);
+
+        for (size_t i = 1; i < impl->runs().size(); ++i) {
+            REPORTER_ASSERT(
+                    reporter,
+                    impl->runs()[i].textRange().start >= impl->runs()[i - 1].textRange().end);
+        }
+
+        REPORTER_ASSERT(reporter, impl->runs()[0].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[0].bidiLevel() == 0);
+        REPORTER_ASSERT(reporter, !impl->runs()[1].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[1].bidiLevel() == 1);
+        REPORTER_ASSERT(reporter, impl->runs()[2].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[2].bidiLevel() == 0);
+    }
+
+    // Embedded LTR within an RTL paragraph requires nested even bidi level 2
+    {
+        ParagraphStyle rtlStyle;
+        rtlStyle.setTextDirection(TextDirection::kRtl);
+        ParagraphBuilderImpl builder(rtlStyle, fontCollection, get_coretext_unicode());
+        TextStyle style;
+        style.setFontSize(14.0f);
+        builder.pushStyle(style);
+        const char* rtlText = "سلام Hello سلام";
+        builder.addText(rtlText, strlen(rtlText));
+        builder.pop();
+
+        auto paragraph = builder.Build();
+        auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+        REPORTER_ASSERT(reporter, impl->computeCodeUnitProperties());
+
+        CoreTextLineShaper shaper(impl);
+        REPORTER_ASSERT(reporter, shaper.shape());
+        REPORTER_ASSERT(reporter, impl->runs().size() == 5);
+
+        for (size_t i = 1; i < impl->runs().size(); ++i) {
+            REPORTER_ASSERT(
+                    reporter,
+                    impl->runs()[i].textRange().start >= impl->runs()[i - 1].textRange().end);
+        }
+
+        REPORTER_ASSERT(reporter, !impl->runs()[0].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[0].bidiLevel() == 1);
+        REPORTER_ASSERT(reporter, !impl->runs()[1].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[1].bidiLevel() == 1);
+        REPORTER_ASSERT(reporter, impl->runs()[2].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[2].bidiLevel() == 2);
+        REPORTER_ASSERT(reporter, !impl->runs()[3].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[3].bidiLevel() == 1);
+        REPORTER_ASSERT(reporter, !impl->runs()[4].leftToRight());
+        REPORTER_ASSERT(reporter, impl->runs()[4].bidiLevel() == 1);
+    }
+}
+
+// Each script block gets its tag, and Common code points take the surrounding script, so
+// runs split where SkShaper's script iterator splits them
+DEF_TEST(CoreTextPipeline_LineShaper_ScriptDetection, reporter) {
+    auto scriptAt = [](const char* text, size_t utf8Index) {
+        CoreTextAttrStringBuilder builder(
+                text, strlen(text), TextDirection::kLtr, test_font_collection());
+        return builder.scriptAt(utf8Index);
+    };
+    REPORTER_ASSERT(reporter, scriptAt("Hello", 0) == SkSetFourByteTag('L', 'a', 't', 'n'));
+    REPORTER_ASSERT(reporter, scriptAt("Привет", 0) == SkSetFourByteTag('C', 'y', 'r', 'l'));
+    REPORTER_ASSERT(reporter, scriptAt("سلام", 0) == SkSetFourByteTag('A', 'r', 'a', 'b'));
+    REPORTER_ASSERT(reporter, scriptAt("שלום", 0) == SkSetFourByteTag('H', 'e', 'b', 'r'));
+    REPORTER_ASSERT(reporter, scriptAt("\xD7\x90", 0) == SkSetFourByteTag('H', 'e', 'b', 'r'));
+    REPORTER_ASSERT(reporter, scriptAt("\xDC\x90", 0) == SkSetFourByteTag('S', 'y', 'r', 'c'));
+    REPORTER_ASSERT(reporter, scriptAt("\xDF\x80", 0) == SkSetFourByteTag('N', 'k', 'o', 'o'));
+    REPORTER_ASSERT(reporter,
+                    scriptAt("\xE0\xA4\x85", 0) == SkSetFourByteTag('D', 'e', 'v', 'a'));
+    REPORTER_ASSERT(reporter,
+                    scriptAt("\xE0\xB8\x81", 0) == SkSetFourByteTag('T', 'h', 'a', 'i'));
+    REPORTER_ASSERT(reporter,
+                    scriptAt("\xE6\xBC\xA2", 0) == SkSetFourByteTag('H', 'a', 'n', 'i'));
+    REPORTER_ASSERT(reporter,
+                    scriptAt("\xE3\x81\x82", 0) == SkSetFourByteTag('H', 'i', 'r', 'a'));
+    REPORTER_ASSERT(reporter,
+                    scriptAt("\xE3\x82\xA2", 0) == SkSetFourByteTag('K', 'a', 'n', 'a'));
+    REPORTER_ASSERT(reporter,
+                    scriptAt("\xED\x95\x9C", 0) == SkSetFourByteTag('H', 'a', 'n', 'g'));
+
+    // Common code points join the preceding script, or the following one when leading
+    REPORTER_ASSERT(reporter, scriptAt("Hi \xD8\xB3", 2) == SkSetFourByteTag('L', 'a', 't', 'n'));
+    REPORTER_ASSERT(reporter, scriptAt("Hi \xD8\xB3", 3) == SkSetFourByteTag('A', 'r', 'a', 'b'));
+    REPORTER_ASSERT(reporter, scriptAt("\xD8\xB3 1", 3) == SkSetFourByteTag('A', 'r', 'a', 'b'));
+    REPORTER_ASSERT(reporter, scriptAt("1 \xD8\xB3", 0) == SkSetFourByteTag('A', 'r', 'a', 'b'));
+    REPORTER_ASSERT(reporter, scriptAt("123", 0) == SkSetFourByteTag('L', 'a', 't', 'n'));
+
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+
+    // Cursive script detection drives run letter-spacing eligibility
+    ParagraphStyle style;
+    ParagraphBuilderImpl builder(style, fontCollection, get_coretext_unicode());
+    TextStyle textStyle;
+    textStyle.setFontSize(14.0f);
+    builder.pushStyle(textStyle);
+    builder.addText("سلام");
+    builder.pop();
+
+    auto paragraph = builder.Build();
+    auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+    impl->computeCodeUnitProperties();
+
+    CoreTextLineShaper shaper(impl);
+    REPORTER_ASSERT(reporter, shaper.shape());
+    REPORTER_ASSERT(reporter, impl->runs().size() == 1);
+    REPORTER_ASSERT(reporter, impl->runs()[0].isCursiveScript());
+    REPORTER_ASSERT(reporter, impl->runs()[0].script() == SkSetFourByteTag('A', 'r', 'a', 'b'));
+}
+
+// Cluster indexes of 2-byte Cyrillic stay on character starts and tile the run without gaps;
+// an index inside a character would break hit-testing and line breaking
+DEF_TEST(CoreTextPipeline_LineShaper_ClusterAtomicity, reporter) {
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+
+    // Multi-byte UTF-8 Cyrillic cluster boundaries must stay byte-aligned
+    {
+        ParagraphStyle style;
+        ParagraphBuilderImpl builder(style, fontCollection, get_coretext_unicode());
+        TextStyle textStyle;
+        textStyle.setFontSize(14.0f);
+        builder.pushStyle(textStyle);
+        const char* cyrText = "Кластер";
+        size_t cyrLen = strlen(cyrText);
+        builder.addText(cyrText, cyrLen);
+        builder.pop();
+
+        auto paragraph = builder.Build();
+        auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+        REPORTER_ASSERT(reporter, impl->computeCodeUnitProperties());
+
+        CoreTextLineShaper shaper(impl);
+        REPORTER_ASSERT(reporter, shaper.shape());
+        REPORTER_ASSERT(reporter, impl->runs().size() == 1);
+
+        auto& run = impl->runs()[0];
+        REPORTER_ASSERT(reporter, run.textRange().width() == cyrLen);
+        REPORTER_ASSERT(reporter, run.clusterIndexes()[0] == 0);
+        REPORTER_ASSERT(reporter, run.clusterIndexes()[run.size()] == cyrLen);
+
+        for (size_t k = 0; k <= run.size(); ++k) {
+            REPORTER_ASSERT(reporter, run.clusterIndexes()[k] % 2 == 0);
+            REPORTER_ASSERT(reporter, run.clusterIndexes()[k] <= cyrLen);
+        }
+
+        size_t lastCharEnd = run.textRange().start;
+        size_t clusterCount = 0;
+        run.iterateThroughClustersInTextOrder([&](size_t glyphStart,
+                                                  size_t glyphEnd,
+                                                  size_t charStart,
+                                                  size_t charEnd,
+                                                  SkScalar /*width*/) {
+            REPORTER_ASSERT(reporter, charStart == lastCharEnd);
+            REPORTER_ASSERT(reporter, charEnd > charStart);
+            REPORTER_ASSERT(reporter, glyphEnd > glyphStart);
+            lastCharEnd = charEnd;
+            ++clusterCount;
+        });
+        REPORTER_ASSERT(reporter, lastCharEnd == run.textRange().end);
+        REPORTER_ASSERT(reporter, clusterCount == 7);
+
+        impl->buildClusterTable();
+        REPORTER_ASSERT(reporter, impl->clusters().size() == 8);
+        for (size_t i = 0; i < cyrLen; ++i) {
+            REPORTER_ASSERT(reporter, impl->clusterIndex(i) == i / 2);
+        }
+    }
+
+    // RTL cluster traversal in logical text order
+    {
+        ParagraphStyle rtlStyle;
+        rtlStyle.setTextDirection(TextDirection::kRtl);
+        ParagraphBuilderImpl builder(rtlStyle, fontCollection, get_coretext_unicode());
+        TextStyle textStyle;
+        textStyle.setFontSize(14.0f);
+        builder.pushStyle(textStyle);
+        const char* rtlText = "اختبار";
+        size_t rtlLen = strlen(rtlText);
+        builder.addText(rtlText, rtlLen);
+        builder.pop();
+
+        auto paragraph = builder.Build();
+        auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+        REPORTER_ASSERT(reporter, impl->computeCodeUnitProperties());
+
+        CoreTextLineShaper shaper(impl);
+        REPORTER_ASSERT(reporter, shaper.shape());
+        REPORTER_ASSERT(reporter, impl->runs().size() == 1);
+
+        auto& run = impl->runs()[0];
+        REPORTER_ASSERT(reporter, !run.leftToRight());
+
+        size_t lastCharEnd = run.textRange().start;
+        size_t clusterCount = 0;
+        run.iterateThroughClustersInTextOrder([&](size_t /*glyphStart*/,
+                                                  size_t /*glyphEnd*/,
+                                                  size_t charStart,
+                                                  size_t charEnd,
+                                                  SkScalar /*width*/) {
+            REPORTER_ASSERT(reporter, charStart == lastCharEnd);
+            REPORTER_ASSERT(reporter, charEnd > charStart);
+            lastCharEnd = charEnd;
+            ++clusterCount;
+        });
+        REPORTER_ASSERT(reporter, lastCharEnd == run.textRange().end);
+        REPORTER_ASSERT(reporter, clusterCount > 0);
+    }
+}
+
+// A placeholder becomes its own run of its exact width between the text runs, and the next
+// run starts right after it, as ParagraphImpl lays out placeholders on the HarfBuzz path
+DEF_TEST(CoreTextPipeline_LineShaper_WithPlaceholders, reporter) {
+    ParagraphStyle paragraphStyle;
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+
+    ParagraphBuilderImpl builder(paragraphStyle, fontCollection, get_coretext_unicode());
+    TextStyle style;
+    style.setFontSize(14.0f);
+    builder.pushStyle(style);
+    builder.addText("Prefix ");
+    PlaceholderStyle placeholderStyle(
+            30.0f, 20.0f, PlaceholderAlignment::kBaseline, TextBaseline::kAlphabetic, 0.0f);
+    builder.addPlaceholder(placeholderStyle);
+    builder.addText(" Suffix");
+    builder.pop();
+
+    auto paragraph = builder.Build();
+    auto impl = static_cast<ParagraphImpl*>(paragraph.get());
+    REPORTER_ASSERT(reporter, impl->computeCodeUnitProperties());
+
+    CoreTextLineShaper shaper(impl);
+    REPORTER_ASSERT(reporter, shaper.shape());
+    REPORTER_ASSERT(reporter, shaper.unresolvedGlyphs() == 0);
+
+    REPORTER_ASSERT(reporter, impl->runs().size() == 3);
+
+    auto& run0 = impl->runs()[0];
+    auto& run1 = impl->runs()[1];
+    auto& run2 = impl->runs()[2];
+
+    REPORTER_ASSERT(reporter, !run0.isPlaceholder());
+    REPORTER_ASSERT(reporter, run0.textRange() == TextRange(0, 7));
+    REPORTER_ASSERT(reporter, run0.advance().fX > 0.0f);
+
+    REPORTER_ASSERT(reporter, run1.isPlaceholder());
+    REPORTER_ASSERT(reporter, run1.advance().fX == 30.0f);
+    REPORTER_ASSERT(reporter, run1.positions()[0].fX == run0.advance().fX);
+    REPORTER_ASSERT(reporter, run1.positions()[1].fX == run0.advance().fX + 30.0f);
+
+    REPORTER_ASSERT(reporter, !run2.isPlaceholder());
+    REPORTER_ASSERT(reporter, run2.advance().fX > 0.0f);
+    REPORTER_ASSERT(reporter, run2.positions()[0].fX == run0.advance().fX + 30.0f);
+
+    impl->buildClusterTable();
+    REPORTER_ASSERT(reporter, impl->clusters().size() > 3);
 }
 
 // CupertinoSystemText and CupertinoSystemDisplay must resolve in matchSystemFamily so that a

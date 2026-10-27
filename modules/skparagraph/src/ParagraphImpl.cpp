@@ -518,6 +518,9 @@ void ParagraphImpl::applySpacingAndBuildClusterTable() {
 
 // Clusters in the order of the input text
 void ParagraphImpl::buildClusterTable() {
+    fClustersIndexFromCodeUnit.clear();
+    fClustersIndexFromCodeUnit.push_back_n(fText.size() + 1, EMPTY_INDEX);
+
     // It's possible that one grapheme includes few runs; we cannot handle it
     // so we break graphemes by the runs instead
     // It's not the ideal solution and has to be revisited later
