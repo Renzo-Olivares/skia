@@ -145,6 +145,9 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
       if (skia_use_harfbuzz && (skia_use_icu || skia_use_libgrapheme)) {
         testonly = true
         sources = [ "slides/ParagraphSlide.cpp" ]
+        if (skia_use_coretext_paragraph) {
+          sources += [ "slides/ParagraphBugsSlide.cpp" ]
+        }
         deps = [
           ":skparagraph",
           ":utils",
