@@ -89,7 +89,8 @@ bool SkUnicodeHardCodedCharProperties::IsWhitespace(SkUnichar unichar) {
           //0x202F, // narrow no-break space
             0x205F, // medium mathematical space
             0x3000};// ideographic space
-    return std::find(whitespaces.begin(), whitespaces.end(), unichar) != whitespaces.end();
+    static_assert(std::is_sorted(whitespaces.begin(), whitespaces.end()));
+    return std::binary_search(whitespaces.begin(), whitespaces.end(), unichar);
 }
 
 bool SkUnicodeHardCodedCharProperties::isSpace(SkUnichar unichar) { return IsSpace(unichar); }
@@ -126,7 +127,8 @@ bool SkUnicodeHardCodedCharProperties::IsSpace(SkUnichar unichar) {
             0x202F, // narrow no-break space
             0x205F, // medium mathematical space
             0x3000}; // ideographic space
-    return std::find(spaces.begin(), spaces.end(), unichar) != spaces.end();
+    static_assert(std::is_sorted(spaces.begin(), spaces.end()));
+    return std::binary_search(spaces.begin(), spaces.end(), unichar);
 }
 
 bool SkUnicodeHardCodedCharProperties::isTabulation(SkUnichar utf8) {

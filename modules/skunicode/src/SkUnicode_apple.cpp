@@ -9,21 +9,26 @@
 #include "include/core/SkString.h"
 #include "include/core/SkTypes.h"
 #include "include/private/SkAssert.h"
+#include "include/private/SkMutex.h"
 #include "include/private/SkTArray.h"
+#include "include/private/SkTemplates.h"
 #include "modules/skunicode/include/SkUnicode.h"
 #include "modules/skunicode/include/SkUnicode_apple.h"
 #include "modules/skunicode/src/SkBidiFactory_icu_subset.h"
 #include "modules/skunicode/src/SkUnicode_hardcoded.h"
 #include "modules/skunicode/src/SkUnicode_icu_bidi.h"
 #include "src/core/SkBitmaskEnum.h"
+#include "src/core/SkNoDestructor.h"
 #include "src/core/SkUTF.h"
 #include "src/utils/mac/SkUniqueCFRef.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -31,8 +36,48 @@ using namespace skia_private;
 
 namespace {
 
+void CFDefaultDeallocate(UniChar* ptr) { CFAllocatorDeallocate(kCFAllocatorDefault, ptr); }
+
+// CoreFoundation UTF-8 decoding always drops a leading EF BB BF as a byte order mark, but here
+// U+FEFF is a real ZWNBSP that owns code units. CFStringCreateWithCharactersNoCopy never strips it,
+// and CF would allocate a UTF-16 buffer for this non-ASCII text anyway, so it adopts ours instead
+SkUniqueCFRef<CFStringRef> MakeCFStringKeepingLeadingZwnbsp(std::string_view utf8) {
+    SkASSERT(utf8.starts_with("\xEF\xBB\xBF"));
+    std::string_view afterBom = utf8.substr(3);
+    // LIFETIME: this probe borrows the caller's bytes and dies before the if body. SkUTF accepts
+    // overlongs and encoded surrogates, CF does not. Let CF reject ill-formed text after the BOM,
+    // so the result does not depend on whether the text starts with U+FEFF
+    if (!SkUniqueCFRef<CFStringRef>(CFStringCreateWithBytesNoCopy(kCFAllocatorDefault,
+                                                                  (const UInt8*)afterBom.data(),
+                                                                  SkToInt(afterBom.size()),
+                                                                  kCFStringEncodingUTF8,
+                                                                  false,
+                                                                  kCFAllocatorNull))) {
+        return nullptr;
+    }
+    // UTF-8 never needs more UTF-16 code units than it has bytes
+    const int utf8Units = SkToInt(utf8.size());
+    std::unique_ptr<UniChar, SkFunctionObject<CFDefaultDeallocate>> utf16(static_cast<UniChar*>(
+            CFAllocatorAllocate(kCFAllocatorDefault, utf8Units * CFIndex{sizeof(UniChar)}, 0)));
+    SkASSERT_RELEASE(utf16);
+    // utf8 starts with valid U+FEFF and CF already validated afterBom
+    const int utf16Units = SkUTF::UTF8ToUTF16(utf16.get(), utf8Units, utf8.data(), utf8.size());
+    SkASSERT(utf16Units >= 1);
+    // kCFAllocatorDefault as contentsDeallocator hands the buffer to CF, which frees it
+    SkUniqueCFRef<CFStringRef> string(CFStringCreateWithCharactersNoCopy(
+            kCFAllocatorDefault, utf16.release(), utf16Units, kCFAllocatorDefault));
+    SkASSERT_RELEASE(string);
+    return string;
+}
+
 // Wrap caller-owned buffers with kCFAllocatorNull to avoid copying text when the encoding is valid
 SkUniqueCFRef<CFStringRef> MakeCFStringNoCopy(const char utf8[], int utf8Units) {
+    // LIFETIME: the returned CFString borrows utf8, so callers keep the buffer alive until it is
+    // released (TokenizerPool::give drops its reference). A leading BOM gets an owned UTF-16 copy
+    // instead, since CF UTF-8 decoding would strip that U+FEFF
+    if (std::string_view text(utf8, SkToSizeT(utf8Units)); text.starts_with("\xEF\xBB\xBF")) {
+        return MakeCFStringKeepingLeadingZwnbsp(text);
+    }
     return SkUniqueCFRef<CFStringRef>(CFStringCreateWithBytesNoCopy(kCFAllocatorDefault,
                                                                     (const UInt8*)utf8,
                                                                     utf8Units,
@@ -84,6 +129,54 @@ struct Utf16ToUtf8Mapper {
     }
 };
 
+// Idle default-locale tokenizers per unit, shared by all threads. CFStringTokenizerCreate loads
+// NaturalLanguage word taggers (up to 2/3 of a CJK getWords call); CFStringTokenizerSetString on
+// an idle tokenizer keeps them. A tokenizer is used by one thread at a time, outside the lock
+class TokenizerPool {
+public:
+    static TokenizerPool& Get() {
+        static SkNoDestructor<TokenizerPool> pool;
+        return *pool;
+    }
+
+    // Returns an idle tokenizer for unit already set to str, or nullptr when none is idle
+    SkUniqueCFRef<CFStringTokenizerRef> take(CFStringRef str, CFRange range, CFOptionFlags unit) {
+        SkUniqueCFRef<CFStringTokenizerRef> tokenizer;
+        {
+            SkAutoMutexExclusive lock(fMutex);
+            SkASSERT(unit <= kCFStringTokenizerUnitWordBoundary);
+            auto& idle = fIdle[unit];
+            if (idle.empty()) {
+                return nullptr;
+            }
+            tokenizer = std::move(idle.back());
+            idle.pop_back();
+        }
+        CFStringTokenizerSetString(tokenizer.get(), str, range);
+        return tokenizer;
+    }
+
+    void give(SkUniqueCFRef<CFStringTokenizerRef> tokenizer, CFOptionFlags unit) {
+        // The tokenizer retains its string, which may borrow the caller's text buffer
+        CFStringTokenizerSetString(tokenizer.get(), CFSTR(""), CFRangeMake(0, 0));
+        SkAutoMutexExclusive lock(fMutex);
+        SkASSERT(unit <= kCFStringTokenizerUnitWordBoundary);
+        auto& idle = fIdle[unit];
+        if (idle.size() < kCapacity) {
+            idle.push_back(std::move(tokenizer));
+        }
+    }
+
+private:
+    static constexpr int kCapacity = 2;
+    static_assert(kCFStringTokenizerUnitWordBoundary == 4);
+
+    SkMutex fMutex;
+    std::array<STArray<kCapacity, SkUniqueCFRef<CFStringTokenizerRef>>,
+               kCFStringTokenizerUnitWordBoundary + 1>
+            fIdle;
+};
+
 // Tokenize [0, len16) with CFStringTokenizer and invoke callback with each token's UTF-16 CFRange
 template <typename Callback>
 bool Tokenize(CFStringRef str,
@@ -94,11 +187,19 @@ bool Tokenize(CFStringRef str,
     if (len16 <= 0 || !str) {
         return true;
     }
+    const CFRange range = CFRangeMake(0, len16);
     SkUniqueCFRef<CFLocaleRef> cfLoc = MakeCFLocale(locale);
-    SkUniqueCFRef<CFStringTokenizerRef> tokenizer(CFStringTokenizerCreate(
-            kCFAllocatorDefault, str, CFRangeMake(0, len16), unit, cfLoc.get()));
+    // Only default-locale tokenizers are recycled: a locale is fixed at creation
+    SkUniqueCFRef<CFStringTokenizerRef> tokenizer;
+    if (!cfLoc) {
+        tokenizer = TokenizerPool::Get().take(str, range, unit);
+    }
     if (!tokenizer) {
-        return false;
+        tokenizer.reset(
+                CFStringTokenizerCreate(kCFAllocatorDefault, str, range, unit, cfLoc.get()));
+        if (!tokenizer) {
+            return false;
+        }
     }
 
     CFStringTokenizerTokenType tokenType = CFStringTokenizerAdvanceToNextToken(tokenizer.get());
@@ -109,22 +210,58 @@ bool Tokenize(CFStringRef str,
         callback(CFStringTokenizerGetCurrentTokenRange(tokenizer.get()));
         tokenType = CFStringTokenizerAdvanceToNextToken(tokenizer.get());
     }
+    if (!cfLoc) {
+        TokenizerPool::Get().give(std::move(tokenizer), unit);
+    }
     return true;
+}
+
+// True for code units that CoreFoundation never joins with each other into one grapheme cluster:
+// Grapheme_Cluster_Break=Other letters, digits, punctuation and spaces of common scripts, and
+// Hangul syllables (no UAX #29 rule joins two of them). Checked for all 40497^2 pairs on macOS
+bool IsStandaloneGrapheme(UniChar c) {
+    // Hand-picked, not generated by tools/unicode/generate_skunicode_tables.py. After an edit run
+    // SkUnicode_Apple_GraphemeFastPathMatchesComposedRanges: it fails if a range admits a BMP code
+    // unit that CF joins to a preceding standalone base
+    static constexpr std::array<std::pair<UniChar, UniChar>, 23> kRanges{{
+            {0x0020, 0x007E}, {0x00A0, 0x00AC}, {0x00AE, 0x02FF}, {0x0370, 0x0377},
+            {0x037A, 0x037F}, {0x0384, 0x038A}, {0x038C, 0x038C}, {0x038E, 0x03A1},
+            {0x03A3, 0x0482}, {0x048A, 0x052F}, {0x05D0, 0x05EA}, {0x0620, 0x064A},
+            {0x0660, 0x066F}, {0x0671, 0x06D3}, {0x0904, 0x0939}, {0x0E01, 0x0E30},
+            {0x3000, 0x3029}, {0x3041, 0x3096}, {0x30A0, 0x30FF}, {0x3400, 0x4DBF},
+            {0x4E00, 0x9FFF}, {0xAC00, 0xD7A3}, {0xFF01, 0xFF60},
+    }};
+    static_assert(std::is_sorted(kRanges.begin(), kRanges.end()));
+    auto next =
+            std::upper_bound(kRanges.begin(), kRanges.end(), c, [](UniChar v, const auto& range) {
+                return v < range.first;
+            });
+    return next != kRanges.begin() && c <= std::prev(next)->second;
 }
 
 // Emit start-of-cluster and end-of-text UTF-16 offsets with guaranteed forward progress even on
 // zero-length ranges from malformed surrogates
 template <typename Callback>
 void ForEachGraphemeBoundary(CFStringRef str, CFIndex len16, Callback&& callback) {
+    CFStringInlineBuffer buffer;
+    CFStringInitInlineBuffer(str, &buffer, CFRangeMake(0, len16));
     CFIndex idx = 0;
     while (idx < len16) {
+        // idx starts a cluster, so two standalone code units make a one-unit cluster without
+        // the per-cluster CoreFoundation call
+        if (IsStandaloneGrapheme(CFStringGetCharacterFromInlineBuffer(&buffer, idx)) &&
+            (idx + 1 == len16 ||
+             IsStandaloneGrapheme(CFStringGetCharacterFromInlineBuffer(&buffer, idx + 1)))) {
+            callback(idx);
+            ++idx;
+            continue;
+        }
         CFRange r = CFStringGetRangeOfComposedCharactersAtIndex(str, idx);
         callback(r.location);
         CFIndex next = std::max(idx + 1, r.location + std::max<CFIndex>(r.length, 1));
         // CFStringGetRangeOfComposedCharactersAtIndex splits CRLF; coalesce per UAX #29 GB3
-        if (next < len16 &&
-            CFStringGetCharacterAtIndex(str, idx) == '\r' &&
-            CFStringGetCharacterAtIndex(str, next) == '\n') {
+        if (next < len16 && CFStringGetCharacterFromInlineBuffer(&buffer, idx) == '\r' &&
+            CFStringGetCharacterFromInlineBuffer(&buffer, next) == '\n') {
             ++next;
         }
         idx = next;
