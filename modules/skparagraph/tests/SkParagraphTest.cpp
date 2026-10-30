@@ -11560,6 +11560,60 @@ UNIX_ONLY_TEST(SkParagraph_TooLongWordAtEndOfTextBreaksAsBefore, reporter) {
     }
 }
 
+// A single cluster wider than the line also moves to the next line instead of joining the text
+// before it; CoreText shapes a whole ZWJ emoji sequence into one such cluster
+UNIX_ONLY_TEST(SkParagraph_TooWideClusterStartsNextLine, reporter) {
+    sk_sp<ResourceFontCollection> fontCollection = sk_make_sp<ResourceFontCollection>();
+    SKIP_IF_FONTS_NOT_FOUND(reporter, fontCollection)
+
+    ParagraphStyle paragraphStyle;
+    paragraphStyle.turnHintingOff();
+    paragraphStyle.setApplyRoundingHack(false);
+    ParagraphBuilderImpl builder(paragraphStyle, fontCollection, get_unicode());
+    TextStyle textStyle;
+    textStyle.setFontFamilies({SkString("Ahem")});
+    textStyle.setFontSize(10);
+    textStyle.setColor(SK_ColorBLACK);
+    builder.pushStyle(textStyle);
+    builder.addText("n");
+    textStyle.setFontSize(30);
+    builder.pushStyle(textStyle);
+    builder.addText("\xE6\xBC\xA2");
+    auto paragraph = builder.Build();
+    paragraph->layout(20);
+    auto lines = static_cast<ParagraphImpl*>(paragraph.get())->lines();
+    REPORTER_ASSERT(reporter, lines.size() == 2 && lines[1].text().start == 1,
+                    "%zu lines, first ends at %zu", lines.size(), lines[0].text().end);
+}
+
+// With two styles, each 14.1f cluster is added one by one; lookAhead must group
+// fWords + (fClusters + cluster) like maxIntrinsicWidth so float rounding matches at word end
+UNIX_ONLY_TEST(SkParagraph_MaxIntrinsicWidthKeepsOneLine, reporter) {
+    sk_sp<ResourceFontCollection> fontCollection = sk_make_sp<ResourceFontCollection>();
+    SKIP_IF_FONTS_NOT_FOUND(reporter, fontCollection)
+
+    ParagraphStyle paragraphStyle;
+    paragraphStyle.turnHintingOff();
+    paragraphStyle.setApplyRoundingHack(false);
+    ParagraphBuilderImpl builder(paragraphStyle, fontCollection, get_unicode());
+    TextStyle textStyle;
+    textStyle.setFontFamilies({SkString("Ahem")});
+    textStyle.setFontSize(14);
+    textStyle.setLetterSpacing(0.1f);
+    textStyle.setColor(SK_ColorBLACK);
+    builder.pushStyle(textStyle);
+    builder.addText("View lic");
+    textStyle.setColor(SK_ColorRED);
+    builder.pushStyle(textStyle);
+    builder.addText("enses");
+    auto paragraph = builder.Build();
+    paragraph->layout(1000);
+    SkScalar maxIntrinsicWidth = paragraph->getMaxIntrinsicWidth();
+    paragraph->layout(maxIntrinsicWidth);
+    REPORTER_ASSERT(reporter, paragraph->lineNumber() == 1, "%zu lines at width %.9g",
+                    paragraph->lineNumber(), maxIntrinsicWidth);
+}
+
 #if defined(SK_UNICODE_ICU_IMPLEMENTATION)
 UNIX_ONLY_TEST(SkParagraph_ICU_EmojiRuns, reporter) {
     SkUnicode_Emoji(SkUnicodes::ICU::Make(), reporter);

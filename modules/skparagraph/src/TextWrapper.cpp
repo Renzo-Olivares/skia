@@ -106,7 +106,10 @@ void TextWrapper::lookAhead(SkScalar maxWidth,
         if (cluster->isHardBreak()) {
         } else if (
                 // TODO: Trying to deal with flutter rounding problem. Must be removed...
-                SkScalar width = fWords.width() + fClusters.width() + cluster->width();
+                // At word end, fClusters adds cluster->width() before fWords adds fClusters, so
+                // maxIntrinsicWidth is fWords + (fClusters + cluster). Group the check the same
+                // way so float rounding matches bit-for-bit and layout(maxIntrinsicWidth) fits
+                SkScalar width = fWords.width() + (fClusters.width() + cluster->width());
                 breaker.breakLine(width)) {
             if (cluster->isWhitespaceBreak()) {
                 // It's the end of the word
@@ -235,7 +238,9 @@ void TextWrapper::lookAhead(SkScalar maxWidth,
                         std::max(fMinIntrinsicWidth, nextWordLength + nextWordHyphenWidth);
             }
 
-            if (cluster->width() > maxWidth) {
+            // A cluster too wide for any line goes alone on an empty line; after other text it
+            // waits for the next line, as a too long word and a placeholder do
+            if (cluster->width() > maxWidth && fWords.empty() && fClusters.empty()) {
                 fClusters.extend(cluster);
                 fTooLongCluster = true;
                 fTooLongWord = true;
