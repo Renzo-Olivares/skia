@@ -1022,4 +1022,150 @@ DEF_TEST(SkUnicode_Apple_Ideographic, reporter) {
     }
     SkUnicode_Ideographic(apple.get(), reporter);
 }
+
+// Returns every boundary of the given type in text, or none if setText fails. A template over
+// the code unit type, as the same text goes through the UTF-8 and the UTF-16 setText overloads
+template <typename CharT>
+static std::vector<SkBreakIterator::Position> collect_break_positions(
+        SkUnicode* unicode, SkUnicode::BreakType type, const std::basic_string<CharT>& text) {
+    std::vector<SkBreakIterator::Position> breaks;
+    auto iter = unicode->makeBreakIterator(type);
+    if (!iter || !iter->setText(text.data(), SkToInt(text.size()))) {
+        return breaks;
+    }
+    for (auto pos = iter->first(); !iter->isDone(); pos = iter->next()) {
+        breaks.push_back(pos);
+    }
+    return breaks;
+}
+
+// U+FEFF at offset 0 is a ZWNBSP (GCB=Control, LB=WJ), not a byte order mark to strip, so it
+// owns its own code units in every UTF-8 and UTF-16 boundary result
+DEF_TEST(SkUnicode_Apple_LeadingZwnbsp, reporter) {
+    auto apple = SkUnicodes::Apple::Make();
+    if (!apple) {
+        REPORTER_ASSERT(reporter, apple);
+        return;
+    }
+    using Positions = std::vector<SkBreakIterator::Position>;
+    const std::string utf8("\uFEFFab\u0301c");
+    const std::u16string utf16(u"\uFEFFab\u0301c");
+    REPORTER_ASSERT(reporter,
+                    collect_break_positions(apple.get(), SkUnicode::BreakType::kGraphemes, utf8) ==
+                            Positions({0, 3, 4, 7, 8}));
+    REPORTER_ASSERT(reporter,
+                    collect_break_positions(apple.get(), SkUnicode::BreakType::kGraphemes, utf16) ==
+                            Positions({0, 1, 2, 4, 5}));
+
+    TArray<SkUnicode::CodeUnitFlags, true> flags;
+    std::string mutableUtf8 = utf8;
+    REPORTER_ASSERT(reporter,
+                    apple->computeCodeUnitFlags(
+                            mutableUtf8.data(), SkToInt(mutableUtf8.size()), false, &flags));
+    REPORTER_ASSERT(reporter, !flags.empty() && flags.size() == SkToInt(utf8.size() + 1));
+    for (int i = 0; i < flags.size(); ++i) {
+        const bool start = i == 0 || i == 3 || i == 4 || i == 7 || i == 8;
+        REPORTER_ASSERT(
+                reporter, SkToBool(flags[i] & SkUnicode::kGraphemeStart) == start, "index %d", i);
+    }
+
+    REPORTER_ASSERT(reporter, apple->toUpper(SkString("\uFEFFabc")).equals("\uFEFFABC"));
+}
+
+// Ill-formed UTF-8 is rejected the same way with and without a leading U+FEFF
+DEF_TEST(SkUnicode_Apple_LeadingZwnbspIllFormed, reporter) {
+    auto apple = SkUnicodes::Apple::Make();
+    if (!apple) {
+        REPORTER_ASSERT(reporter, apple);
+        return;
+    }
+    const char* const illFormed[] = {"\xED\xA0\x80", "\xE0\x80\x80", "\xC0\x80", "\xFF"};
+    for (const char* text : illFormed) {
+        const std::string plain(text);
+        const std::string withBom = "\xEF\xBB\xBF" + plain;
+        auto plainIter = apple->makeBreakIterator(SkUnicode::BreakType::kGraphemes);
+        auto bomIter = apple->makeBreakIterator(SkUnicode::BreakType::kGraphemes);
+        REPORTER_ASSERT(reporter, !plainIter->setText(plain.data(), SkToInt(plain.size())));
+        REPORTER_ASSERT(reporter, !bomIter->setText(withBom.data(), SkToInt(withBom.size())));
+        std::vector<SkUnicode::Position> words;
+        const int withBomSize = SkToInt(withBom.size());
+        REPORTER_ASSERT(reporter, !apple->getUtf8Words(withBom.data(), withBomSize, "en", &words));
+    }
+}
+#endif
+
+#if defined(SK_UNICODE_APPLE_IMPLEMENTATION) && defined(SK_UNICODE_ICU_IMPLEMENTATION)
+// Apple and ICU must agree on every boundary when U+FEFF starts the text, repeats, sits in the
+// middle, or is the only character
+DEF_TEST(SkUnicode_Apple_LeadingZwnbspMatchesICU, reporter) {
+    auto apple = SkUnicodes::Apple::Make();
+    auto icu = SkUnicodes::ICU::Make();
+    if (!apple || !icu) {
+        REPORTER_ASSERT(reporter, apple);
+        REPORTER_ASSERT(reporter, icu);
+        return;
+    }
+    struct Sample {
+        const char* fUtf8;
+        const char16_t* fUtf16;
+    };
+    const Sample samples[] = {
+            {"\uFEFFab\u0301c", u"\uFEFFab\u0301c"},
+            {"\uFEFF\uFEFFa", u"\uFEFF\uFEFFa"},
+            {"a\uFEFFb", u"a\uFEFFb"},
+            {"\uFEFF", u"\uFEFF"},
+            {"\uFEFFhello world", u"\uFEFFhello world"},
+    };
+    const SkUnicode::BreakType kTypes[] = {SkUnicode::BreakType::kGraphemes,
+                                           SkUnicode::BreakType::kWords,
+                                           SkUnicode::BreakType::kLines};
+    for (size_t s = 0; s < std::size(samples); ++s) {
+        const std::string utf8(samples[s].fUtf8);
+        const std::u16string utf16(samples[s].fUtf16);
+        for (auto type : kTypes) {
+            REPORTER_ASSERT(reporter,
+                            collect_break_positions(apple.get(), type, utf8) ==
+                                    collect_break_positions(icu.get(), type, utf8),
+                            "sample %zu UTF-8 break type %d",
+                            s,
+                            static_cast<int>(type));
+            REPORTER_ASSERT(reporter,
+                            collect_break_positions(apple.get(), type, utf16) ==
+                                    collect_break_positions(icu.get(), type, utf16),
+                            "sample %zu UTF-16 break type %d",
+                            s,
+                            static_cast<int>(type));
+        }
+
+        TArray<SkUnicode::CodeUnitFlags, true> appleFlags, icuFlags;
+        std::string appleUtf8 = utf8, icuUtf8 = utf8;
+        REPORTER_ASSERT(reporter,
+                        apple->computeCodeUnitFlags(
+                                appleUtf8.data(), SkToInt(appleUtf8.size()), false, &appleFlags));
+        REPORTER_ASSERT(reporter,
+                        icu->computeCodeUnitFlags(
+                                icuUtf8.data(), SkToInt(icuUtf8.size()), false, &icuFlags));
+        REPORTER_ASSERT(reporter, appleFlags == icuFlags, "sample %zu UTF-8 flags", s);
+
+        std::u16string appleUtf16 = utf16, icuUtf16 = utf16;
+        REPORTER_ASSERT(reporter,
+                        apple->computeCodeUnitFlags(
+                                appleUtf16.data(), SkToInt(appleUtf16.size()), false, &appleFlags));
+        REPORTER_ASSERT(reporter,
+                        icu->computeCodeUnitFlags(
+                                icuUtf16.data(), SkToInt(icuUtf16.size()), false, &icuFlags));
+        REPORTER_ASSERT(reporter, appleFlags == icuFlags, "sample %zu UTF-16 flags", s);
+
+        std::vector<SkUnicode::Position> appleWords, icuWords;
+        REPORTER_ASSERT(reporter,
+                        apple->getUtf8Words(utf8.data(), SkToInt(utf8.size()), "en", &appleWords));
+        REPORTER_ASSERT(reporter,
+                        icu->getUtf8Words(utf8.data(), SkToInt(utf8.size()), "en", &icuWords));
+        REPORTER_ASSERT(reporter, appleWords == icuWords, "sample %zu UTF-8 words", s);
+
+        SkString text(utf8.data(), utf8.size());
+        REPORTER_ASSERT(
+                reporter, apple->toUpper(text).equals(icu->toUpper(text)), "sample %zu toUpper", s);
+    }
+}
 #endif
