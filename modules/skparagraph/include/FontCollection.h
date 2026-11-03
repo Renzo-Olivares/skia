@@ -57,6 +57,10 @@ private:
 
     sk_sp<SkTypeface> matchTypeface(const SkString& familyName, SkFontStyle fontStyle);
 
+    // CoreTextFontRegistry queries only user font managers, fDefaultFamilyNames,
+    // fEnableFontFallback, and cloneTypeface; system families resolve through CoreText
+    friend class CoreTextFontRegistry;
+
     sk_sp<SkTypeface> cloneTypeface(const sk_sp<SkTypeface>& typeface, const FontArguments& args);
 
     struct FaceCache;
