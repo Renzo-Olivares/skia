@@ -14,6 +14,7 @@
 #include "modules/skparagraph/src/CoreTextAttrStringBuilder.h"
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skparagraph/src/Run.h"
+#include "src/core/SkNoDestructor.h"
 #include "src/core/SkTHash.h"
 #include "src/core/SkUTF.h"
 #include "src/utils/mac/SkCGBase.h"
@@ -168,8 +169,22 @@ static void normalize_cluster_indices(uint32_t* clusters, CFIndex glyphCount, bo
 // the letterSpacing SkParagraph adds later stacks on the trak as native tracking does, except
 // in cursive scripts, which SkParagraph does not space
 static SkUniqueCFRef<CTLineRef> typeset_line(CFAttributedStringRef attrStr) {
+    // CTTypesetterCreateWithAttributedString disables GSUB/GPOS/morx/kerx above 10,240 UTF-16
+    // code units unless unbounded layout is explicitly enabled
+    static const SkNoDestructor<SkUniqueCFRef<CFDictionaryRef>> kUnboundedOptions([] {
+        const void* keys[] = {kCTTypesetterOptionAllowUnboundedLayout};
+        const void* values[] = {kCFBooleanTrue};
+        return SkUniqueCFRef<CFDictionaryRef>(CFDictionaryCreate(
+                kCFAllocatorDefault,
+                keys,
+                values,
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks));
+    }());
     const CFRange range = CFRangeMake(0, CFAttributedStringGetLength(attrStr));
-    SkUniqueCFRef<CTTypesetterRef> typesetter(CTTypesetterCreateWithAttributedString(attrStr));
+    SkUniqueCFRef<CTTypesetterRef> typesetter(
+            CTTypesetterCreateWithAttributedStringAndOptions(attrStr, kUnboundedOptions->get()));
     if (!typesetter) {
         return nullptr;
     }
@@ -604,7 +619,14 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
     skia_private::STArray<16, CTRunItem> sortedRuns(runCount);
     for (CFIndex i = 0; i < runCount; ++i) {
         CTRunRef ctRun = (CTRunRef)CFArrayGetValueAtIndex(runs, i);
+        // Drop empty runs upfront so the trailing-newline lookahead sees no empty CTRuns after '\n'
+        if (CTRunGetGlyphCount(ctRun) == 0) {
+            continue;
+        }
         CFRange cfRange = CTRunGetStringRange(ctRun);
+        if (cfRange.length == 0) {
+            continue;
+        }
         sortedRuns.push_back({ctRun, cfRange.location, cfRange.length});
     }
 
@@ -631,12 +653,70 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
     Run::ShapingBuffer shapingBuffer;
 
     const auto& textStyles = fParagraph->fTextStyles;
-    for (const auto& item : sortedRuns) {
+    // fTextStyles is sorted by start, so the candidate is the last block starting at or before
+    // utf8Pos; a position in a gap between blocks keeps the paragraph default style
+    auto blockAt = [&](size_t utf8Pos) -> const Block* {
+        const Block* nextBlock = std::upper_bound(
+                textStyles.begin(),
+                textStyles.end(),
+                utf8Pos,
+                [](size_t pos, const Block& b) { return pos < b.fRange.start; });
+        if (nextBlock != textStyles.begin() && utf8Pos < nextBlock[-1].fRange.end) {
+            return nextBlock - 1;
+        }
+        return nullptr;
+    };
+
+    auto isAllowedCtFont = [&](CTFontRef f) -> bool {
+        bool* allowed = allowedFontCache.find(f);
+        if (!allowed) {
+            allowed = allowedFontCache.set(
+                    f, is_allowed_font(f, allowedTypefaces, style->getFontFamilies()));
+        }
+        return *allowed;
+    };
+
+    // Read kCTFontAttributeName from attrStr to preserve exact descriptor attributes (such as
+    // liga=0 or variations) for SkTypeface equality, falling back to createFont in unstyled gaps
+    auto attrPrimaryCtFont = [&](CFIndex utf16Loc, SkUniqueCFRef<CTFontRef>& owned) -> CTFontRef {
+        CTFontRef f = (CTFontRef)CFAttributedStringGetAttribute(
+                attrStr.get(), utf16Loc, kCTFontAttributeName, nullptr);
+        if (!f) {
+            CGFloat standInSize = style->getFontSize() > 0.0f ? style->getFontSize() : 14.0f;
+            owned = CoreTextFontRegistry::Instance().createFont(
+                    primary.get(), style->getFontStyle(), standInSize);
+            f = owned.get();
+        }
+        return f;
+    };
+
+    auto resolveBidiLevel = [&](size_t utf8Pos, CTRunRef r) -> uint8_t {
+        const bool ctIsRtl = (CTRunGetStatus(r) & kCTRunStatusRightToLeft) != 0;
+        uint8_t level = 0;
+        bool foundRegion = false;
+        for (const auto& reg : fParagraph->fBidiRegions) {
+            if (utf8Pos >= reg.start && utf8Pos < reg.end) {
+                level = reg.level;
+                foundRegion = true;
+                break;
+            }
+        }
+        if (foundRegion) {
+            // Reconcile ICU embedding level parity with CoreText run direction to ensure downstream
+            // visual reordering matches
+            if ((level % 2 != 0) != ctIsRtl) {
+                level = ctIsRtl ? (level | 1) : (level > 0 ? level - 1 : 0);
+            }
+        } else {
+            level = ctIsRtl ? 1 : 0;
+        }
+        return level;
+    };
+
+    for (int runIdx = 0; runIdx < sortedRuns.size(); ++runIdx) {
+        const CTRunItem& item = sortedRuns[runIdx];
         CTRunRef ctRun = item.run;
         CFIndex glyphCount = CTRunGetGlyphCount(ctRun);
-        if (glyphCount == 0) {
-            continue;
-        }
 
         CFRange cfRange = CFRangeMake(item.location, item.length);
         TextRange relUtf8Range = builder.indexMap().cfrangeToTextRange(cfRange);
@@ -646,17 +726,7 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
             continue;
         }
 
-        // fTextStyles is sorted by start, so the candidate is the last block starting at or
-        // before the run; a run in a gap between blocks keeps the paragraph default style
-        const Block* nextBlock = std::upper_bound(
-                textStyles.begin(),
-                textStyles.end(),
-                runUtf8Range.start,
-                [](size_t pos, const Block& block) { return pos < block.fRange.start; });
-        const Block* block = nullptr;
-        if (nextBlock != textStyles.begin() && runUtf8Range.start < nextBlock[-1].fRange.end) {
-            block = nextBlock - 1;
-        }
+        const Block* block = blockAt(runUtf8Range.start);
 
         if (!hasBlockState || block != runBlock) {
             hasBlockState = true;
@@ -690,13 +760,24 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
         SkASSERT(ctFont);
         bool isFallback = isLastResortFont(ctFont);
         if (!isFallback && fallbackDisabled) {
-            bool* allowed = allowedFontCache.find(ctFont);
-            if (!allowed) {
-                allowed = allowedFontCache.set(
-                        ctFont,
-                        is_allowed_font(ctFont, allowedTypefaces, style->getFontFamilies()));
+            isFallback = !isAllowedCtFont(ctFont);
+        }
+
+        // CoreText cascades U+000A to a fallback font when the primary face lacks a newline glyph;
+        // keep a standalone '\n' on the block's primary CTFont as glyph 0 so empty-line metrics
+        // and font equality match the primary face
+        SkUniqueCFRef<CTFontRef> ownedAttrFont;
+        bool pinnedStandaloneNewline = false;
+        if (runUtf8Range.width() == 1 && fParagraph->text()[runUtf8Range.start] == '\n') {
+            CTFontRef attrFont = attrPrimaryCtFont(item.location, ownedAttrFont);
+            const UniChar nlChar = '\n';
+            CGGlyph nlGlyph = 0;
+            if (attrFont && !CTFontGetGlyphsForCharacters(attrFont, &nlChar, &nlGlyph, 1) &&
+                !isLastResortFont(attrFont) && (!fallbackDisabled || isAllowedCtFont(attrFont))) {
+                ctFont = attrFont;
+                isFallback = false;
+                pinnedStandaloneNewline = true;
             }
-            isFallback = !*allowed;
         }
 
         // CoreText reads a zero point size as its 12pt default, so the attributed string shapes
@@ -724,44 +805,60 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
                                *style,
                                fParagraph->paragraphStyle().fakeMissingFontStyles());
 
-        CTRunStatus status = CTRunGetStatus(ctRun);
-        bool ctIsRtl = (status & kCTRunStatusRightToLeft) != 0;
-        uint8_t bidiLevel = 0;
-        bool foundRegion = false;
-        for (const auto& r : fParagraph->fBidiRegions) {
-            if (runUtf8Range.start >= r.start && runUtf8Range.start < r.end) {
-                bidiLevel = r.level;
-                foundRegion = true;
-                break;
-            }
-        }
-        if (foundRegion) {
-            // Reconcile ICU embedding level parity with CoreText run direction to ensure downstream
-            // visual reordering matches
-            if ((bidiLevel % 2 != 0) != ctIsRtl) {
-                bidiLevel = ctIsRtl ? (bidiLevel | 1) : (bidiLevel > 0 ? bidiLevel - 1 : 0);
-            }
-        } else {
-            bidiLevel = ctIsRtl ? 1 : 0;
-        }
+        uint8_t bidiLevel = resolveBidiLevel(runUtf8Range.start, ctRun);
 
         // The itemization that keeps cursive ranges unspaced also names the run's
         // script, so Run::isCursiveScript agrees with the glyphs CoreText produced
         SkFourByteTag script = builder.scriptAt(relUtf8Range.start);
 
-        skia_private::AutoSTArray<64, CFIndex> indexBuffer(glyphCount);
-        CTRunGetStringIndices(ctRun, CFRangeMake(0, glyphCount), indexBuffer.data());
+        // CoreText splits a trailing '\n' into a separate CTRun when the primary face lacks U+000A
+        // or on RTL lines; fold it back into the preceding primary-font run so line-end caret
+        // hit-testing and multi-line spacing see one run per segment
+        const CFIndex ctGlyphCount = glyphCount;
+        bool coalescedNewline = false;
+        CGGlyph coalescedNlGlyph = 0;
+        if (!isFallback && runIdx + 2 == sortedRuns.size() &&
+            runUtf8Range.end + 1 == regionRange.end &&
+            fParagraph->text()[regionRange.end - 1] == '\n') {
+            const CTRunItem& nlItem = sortedRuns[runIdx + 1];
+            if (nlItem.location == item.location + item.length && nlItem.length == 1 &&
+                CTRunGetGlyphCount(nlItem.run) == 1 && blockAt(runUtf8Range.end) == block &&
+                resolveBidiLevel(runUtf8Range.end, nlItem.run) == bidiLevel) {
+                SkUniqueCFRef<CTFontRef> ownedNlFont;
+                CTFontRef nlAttrFont = attrPrimaryCtFont(nlItem.location, ownedNlFont);
+                if (nlAttrFont && CFEqual(ctFont, nlAttrFont)) {
+                    const UniChar nlChar = '\n';
+                    if (!CTFontGetGlyphsForCharacters(ctFont, &nlChar, &coalescedNlGlyph, 1)) {
+                        coalescedNlGlyph = 0;
+                    }
+                    coalescedNewline = true;
+                    glyphCount = ctGlyphCount + 1;
+                    runUtf8Range.end = regionRange.end;
+                    ++runIdx;
+                }
+            }
+        }
+
+        // RTL runs store glyphs in visual order, so a logical-end '\n' sits at visual slot 0
+        const bool runIsLtr = (bidiLevel % 2) == 0;
+        const CFIndex base = (coalescedNewline && !runIsLtr) ? 1 : 0;
+        const CFIndex nlOutIdx = runIsLtr ? ctGlyphCount : 0;
+
+        skia_private::AutoSTArray<64, CFIndex> indexBuffer(ctGlyphCount);
+        CTRunGetStringIndices(ctRun, CFRangeMake(0, ctGlyphCount), indexBuffer.data());
 
         skia_private::AutoSTArray<64, uint32_t> clusterBuffer(glyphCount);
-        for (CFIndex k = 0; k < glyphCount; ++k) {
+        for (CFIndex k = 0; k < ctGlyphCount; ++k) {
             size_t u8InRegion = builder.indexMap().toUtf8Index(indexBuffer[k]);
             size_t globalU8 = regionRange.start + u8InRegion;
             size_t clusterInRun =
                     (globalU8 >= runUtf8Range.start) ? (globalU8 - runUtf8Range.start) : 0;
-            clusterBuffer[k] = SkToU32(clusterInRun);
+            clusterBuffer[base + k] = SkToU32(clusterInRun);
         }
-        const bool runIsLtr = (bidiLevel % 2) == 0;
-        normalize_cluster_indices(clusterBuffer.data(), glyphCount, runIsLtr);
+        normalize_cluster_indices(clusterBuffer.data() + base, ctGlyphCount, runIsLtr);
+        if (coalescedNewline) {
+            clusterBuffer[nlOutIdx] = SkToU32(runUtf8Range.width() - 1);
+        }
 
         auto glyphTextRange = [&](CFIndex k) -> TextRange {
             size_t cStart = clusterBuffer[k];
@@ -847,34 +944,56 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
                 runAdvanceX += glyphAdvances[k];
             }
         } else {
-            CTRunGetGlyphs(ctRun, CFRangeMake(0, glyphCount), glyphBuffer.data());
-            // CTRunGetAdvances derives advances from drawn x, so a zero-advance mark drawn d off
-            // the pen shows as +d on the glyph before it in the run and -d on the mark. Base
-            // advances leave mark positioning to the origins, as HarfBuzz leaves it to x_offset
-            CTRunGetBaseAdvancesAndOrigins(
-                    ctRun, CFRangeMake(0, glyphCount), advances.data(), origins.data());
-            // The 12pt stand-in advances CoreText gives zero-size text never reach the run
-            if (zeroSize) {
-                std::fill_n(glyphAdvances.data(), glyphCount, 0.0f);
-            } else {
-                skia_private::AutoSTArray<64, CGSize> nominal(splitKerning ? glyphCount : 0);
+            // ctRun holds the fallback font's glyph ID rather than the pinned primary face's, so
+            // emit .notdef (0) directly and assign its HarfBuzz advance in the newline loop below
+            if (pinnedStandaloneNewline) {
+                glyphBuffer[0] = 0;
+                origins[0] = CGPointZero;
+                glyphAdvances[0] = 0.0f;
                 if (splitKerning) {
-                    CTFontGetAdvancesForGlyphs(ctFont,
-                                               kCTFontOrientationHorizontal,
-                                               glyphBuffer.data(),
-                                               nominal.data(),
-                                               glyphCount);
+                    splitOffsets[0] = 0;
                 }
-                // KEEPER-DEBT: this keeps CoreText's advance to the next 28pt tab stop, where
-                // HarfBuzz gives U+0009 its hmtx advance; the stop counts from the CTLine start
-                // (hard break or placeholder), so after a soft wrap it is off the line's stops.
-                // Remove when tabs get the HarfBuzz advance or line-relative stops
-                coretext_advances(font.isSubpixel(),
-                                  splitKerning ? nominal.data() : nullptr,
-                                  advances.data(),
-                                  glyphAdvances.data(),
-                                  splitKerning ? splitOffsets.data() : nullptr,
-                                  glyphCount);
+            } else {
+                CTRunGetGlyphs(ctRun, CFRangeMake(0, ctGlyphCount), glyphBuffer.data() + base);
+                // CTRunGetAdvances derives advances from drawn x, so a zero-advance mark drawn d
+                // off the pen shows as +d on the glyph before it in the run and -d on the mark.
+                // Base advances leave mark positioning to the origins, as HarfBuzz leaves it to
+                // x_offset
+                CTRunGetBaseAdvancesAndOrigins(ctRun,
+                                               CFRangeMake(0, ctGlyphCount),
+                                               advances.data() + base,
+                                               origins.data() + base);
+                // The 12pt stand-in advances CoreText gives zero-size text never reach the run
+                if (zeroSize) {
+                    std::fill_n(glyphAdvances.data(), glyphCount, 0.0f);
+                } else {
+                    skia_private::AutoSTArray<64, CGSize> nominal(splitKerning ? ctGlyphCount : 0);
+                    if (splitKerning) {
+                        CTFontGetAdvancesForGlyphs(ctFont,
+                                                   kCTFontOrientationHorizontal,
+                                                   glyphBuffer.data() + base,
+                                                   nominal.data(),
+                                                   ctGlyphCount);
+                    }
+                    // KEEPER-DEBT: this keeps CoreText's advance to the next 28pt tab stop, where
+                    // HarfBuzz gives U+0009 its hmtx advance; the stop counts from the CTLine start
+                    // (hard break or placeholder), so after a soft wrap it is off the line's stops.
+                    // Remove when tabs get the HarfBuzz advance or line-relative stops
+                    coretext_advances(font.isSubpixel(),
+                                      splitKerning ? nominal.data() : nullptr,
+                                      advances.data() + base,
+                                      glyphAdvances.data() + base,
+                                      splitKerning ? splitOffsets.data() + base : nullptr,
+                                      ctGlyphCount);
+                }
+                if (coalescedNewline) {
+                    glyphBuffer[nlOutIdx] = coalescedNlGlyph;
+                    origins[nlOutIdx] = CGPointZero;
+                    glyphAdvances[nlOutIdx] = 0.0f;
+                    if (splitKerning) {
+                        splitOffsets[nlOutIdx] = 0;
+                    }
+                }
             }
             for (CFIndex k = 0; k < glyphCount; ++k) {
                 // CoreText gives '\n' no advance, HarfBuzz the advance of the primary font's
@@ -882,10 +1001,6 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
                 // their float positions and widths differ unless '\n' gets one here too
                 TextRange gRange = glyphTextRange(k);
                 if (!zeroSize && gRange.width() == 1 && fParagraph->text()[gRange.start] == '\n') {
-                    // KEEPER-DEBT: this is the run font's U+000A glyph; with a primary font
-                    // that lacks U+000A, CoreText puts '\n' in a fallback run, so this is not
-                    // the primary .notdef HarfBuzz uses and its advance can differ. Remove when
-                    // '\n' stays in the primary font's run
                     SkScalar newlineAdvance = font.getWidth(font.unicharToGlyph('\n'));
                     // Whole pixels for a non-subpixel font, as for every other glyph
                     glyphAdvances[k] = font.isSubpixel() ? newlineAdvance

@@ -5006,9 +5006,8 @@ DEF_TEST(CoreTextPipeline_PairKerning_EllipsisKernedAndOrdered, reporter) {
 
 // Hard-break line ends are compared with HarfBuzz, which needs HarfBuzz
 #if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ) && defined(SK_UNICODE_ICU_IMPLEMENTATION)
-// A primary font without U+000A: HarfBuzz keeps '\n' in it as .notdef, CoreText moves it to a
-// fallback font. Unspaced lines must still match; the letter-spaced widths are only logged, as
-// the split run spaces them in another order
+// A primary font without U+000A must still keep '\n' in the primary font's run as .notdef so
+// line-end hit-testing, empty-line metrics, and letter-spaced widths match HarfBuzz
 DEF_TEST(CoreTextPipeline_HardBreak_PrimaryFontWithoutNewline, reporter) {
     sk_sp<SkTypeface> dejaVu = ToolUtils::CreateTypefaceFromResource("fonts/DejaVuSans.subset.ttf");
     if (!dejaVu) {
@@ -5044,27 +5043,51 @@ DEF_TEST(CoreTextPipeline_HardBreak_PrimaryFontWithoutNewline, reporter) {
             std::vector<LineMetrics> ctLines, hbLines;
             ct->getLineMetrics(ctLines);
             hb->getLineMetrics(hbLines);
-            REPORTER_ASSERT(reporter, ctLines.size() == hbLines.size());
+            REPORTER_ASSERT(reporter, !ctLines.empty() && ctLines.size() == hbLines.size());
+            const auto ctRuns = static_cast<ParagraphImpl*>(ct.get())->runs();
+            REPORTER_ASSERT(reporter,
+                            !ctRuns.empty() && ctRuns.size() == ctLines.size(),
+                            "'%s' spacing=%g: expected %zu runs (one per segment), got %zu",
+                            text,
+                            letterSpacing,
+                            ctLines.size(),
+                            ctRuns.size());
+            for (size_t r = 1; r < ctRuns.size(); ++r) {
+                REPORTER_ASSERT(reporter, ctRuns[r].font() == ctRuns[0].font());
+            }
             for (size_t i = 0; i < std::min(ctLines.size(), hbLines.size()); ++i) {
-                if (letterSpacing != 0) {
-                    INFOF(reporter,
-                          "'%s' spaced line %zu: CoreText w=%.9g, HarfBuzz w=%.9g\n",
-                          text,
-                          i,
-                          ctLines[i].fWidth,
-                          hbLines[i].fWidth);
-                    continue;
-                }
                 REPORTER_ASSERT(reporter,
-                                ctLines[i].fWidth == hbLines[i].fWidth,
-                                "'%s' line %zu: CoreText w=%.9g vs HarfBuzz w=%.9g",
+                                ctLines[i].fWidth == hbLines[i].fWidth &&
+                                        ctLines[i].fHeight == hbLines[i].fHeight,
+                                "'%s' spacing=%g line %zu: CoreText w=%.9g h=%.9g vs "
+                                "HarfBuzz w=%.9g h=%.9g",
                                 text,
+                                letterSpacing,
                                 i,
                                 ctLines[i].fWidth,
-                                hbLines[i].fWidth);
-            }
-            if (letterSpacing != 0) {
-                continue;
+                                ctLines[i].fHeight,
+                                hbLines[i].fWidth,
+                                hbLines[i].fHeight);
+                if (ctLines[i].fWidth > 0) {
+                    const SkScalar y =
+                            static_cast<SkScalar>(ctLines[i].fBaseline - ctLines[i].fAscent / 2);
+                    const SkScalar endX = static_cast<SkScalar>(ctLines[i].fWidth);
+                    PositionWithAffinity ctPos = ct->getGlyphPositionAtCoordinate(endX, y);
+                    PositionWithAffinity hbPos = hb->getGlyphPositionAtCoordinate(endX, y);
+                    REPORTER_ASSERT(reporter,
+                                    ctPos.position == hbPos.position &&
+                                            ctPos.affinity == hbPos.affinity &&
+                                            ctPos.affinity == Affinity::kUpstream,
+                                    "'%s' spacing=%g line %zu end hit-test: CoreText {%d, %d} vs "
+                                    "HarfBuzz {%d, %d}",
+                                    text,
+                                    letterSpacing,
+                                    i,
+                                    ctPos.position,
+                                    static_cast<int>(ctPos.affinity),
+                                    hbPos.position,
+                                    static_cast<int>(hbPos.affinity));
+                }
             }
             for (size_t i = 0; i < strlen(text); ++i) {
                 auto ctBoxes = ct->getRectsForRange(
@@ -5076,8 +5099,10 @@ DEF_TEST(CoreTextPipeline_HardBreak_PrimaryFontWithoutNewline, reporter) {
                     REPORTER_ASSERT(reporter,
                                     ctBoxes[k].rect.fLeft == hbBoxes[k].rect.fLeft &&
                                             ctBoxes[k].rect.fRight == hbBoxes[k].rect.fRight,
-                                    "'%s' char %zu: CoreText [%.9g, %.9g] vs HarfBuzz [%.9g, %.9g]",
+                                    "'%s' spacing=%g char %zu: CoreText [%.9g, %.9g] vs "
+                                    "HarfBuzz [%.9g, %.9g]",
                                     text,
+                                    letterSpacing,
                                     i,
                                     ctBoxes[k].rect.fLeft,
                                     ctBoxes[k].rect.fRight,
@@ -5190,5 +5215,149 @@ DEF_TEST(CoreTextPipeline_HardBreak_LetterSpacedLinesGrowPerGrapheme, reporter) 
                             twoLineMetrics[1].fWidth,
                             oneLineMetrics[0].fWidth);
         }
+    }
+    // Multi-line RTL runs are spaced from the visually leftmost segment first; each line must
+    // still grow by letterSpacing per letter and stay aligned to the right (start) edge
+    if (has_font_families({"Arial Hebrew"})) {
+        const char* rtlText =
+                "\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D\n"
+                "\xD7\xA2\xD7\x95\xD7\x9C\xD7\x9D";
+        auto rtl = [&](SkScalar letterSpacing) {
+            ParagraphStyle paragraphStyle;
+            paragraphStyle.setTextShapingEngine(TextShapingEngine::kCoreText);
+            paragraphStyle.setTextDirection(TextDirection::kRtl);
+            paragraphStyle.setApplyRoundingHack(false);
+            TextStyle style;
+            style.setFontFamilies({SkString("Arial Hebrew")});
+            style.setFontSize(17.3f);
+            style.setLetterSpacing(letterSpacing);
+            ParagraphBuilderImpl builder(
+                    paragraphStyle, test_font_collection(), get_unicode(paragraphStyle));
+            builder.pushStyle(style);
+            builder.addText(rtlText);
+            auto paragraph = builder.Build();
+            paragraph->layout(10000);
+            return paragraph;
+        };
+        const SkScalar kSpacing = 0.7f;
+        auto plain = rtl(0);
+        auto spaced = rtl(kSpacing);
+        std::vector<LineMetrics> plainLines, lines;
+        plain->getLineMetrics(plainLines);
+        spaced->getLineMetrics(lines);
+        REPORTER_ASSERT(reporter, lines.size() == 2 && plainLines.size() == 2);
+        for (size_t i = 0; i < std::min(lines.size(), plainLines.size()); ++i) {
+            // Four Hebrew letters per line
+            const double expected = plainLines[i].fWidth + 4 * kSpacing;
+            REPORTER_ASSERT(reporter,
+                            SkScalarNearlyEqual(lines[i].fWidth, expected, 1e-3f) &&
+                                    SkScalarNearlyEqual(
+                                            lines[i].fLeft + lines[i].fWidth, 10000, 1e-3f),
+                            "RTL line %zu: width %.9g left %.9g, expected width %.9g",
+                            i,
+                            lines[i].fWidth,
+                            lines[i].fLeft,
+                            expected);
+        }
+    }
+}
+
+// CTTypesetterCreateWithAttributedString disables GSUB/GPOS/morx/kerx above 10,240 UTF-16 code
+// units unless kCTTypesetterOptionAllowUnboundedLayout is enabled
+DEF_TEST(CoreTextPipeline_UnboundedTypesetterAbove10240Utf16, reporter) {
+    sk_sp<SkTypeface> roboto = ToolUtils::CreateTypefaceFromResource("fonts/Roboto-Regular.ttf");
+    if (!roboto) {
+        return;
+    }
+    auto provider = sk_make_sp<TypefaceFontProvider>();
+    provider->registerTypeface(roboto, SkString("Roboto"));
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setAssetFontManager(provider);
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+
+    auto buildAndLayout = [&](const SkString& family, const std::string& text) {
+        ParagraphStyle paragraphStyle;
+        paragraphStyle.setTextShapingEngine(TextShapingEngine::kCoreText);
+        paragraphStyle.setApplyRoundingHack(false);
+        TextStyle style;
+        style.setFontFamilies({family});
+        style.setFontSize(20.0f);
+        ParagraphBuilderImpl builder(paragraphStyle, fontCollection, get_unicode(paragraphStyle));
+        builder.pushStyle(style);
+        builder.addText(text.data(), text.size());
+        auto paragraph = builder.Build();
+        paragraph->layout(1e7f);
+        return paragraph;
+    };
+
+    auto totalGlyphs = [](Paragraph* p) {
+        size_t count = 0;
+        for (const auto& run : static_cast<ParagraphImpl*>(p)->runs()) {
+            count += run.size();
+        }
+        return count;
+    };
+
+    // 3,534 * 3 = 10,602 UTF-16 code units (> 10,240 cutoff)
+    constexpr size_t kRepeats = 3534;
+
+    {
+        auto shortAv = buildAndLayout(SkString("Roboto"), "AV ");
+        std::string longText;
+        longText.reserve(kRepeats * 3);
+        for (size_t i = 0; i < kRepeats; ++i) {
+            longText += "AV ";
+        }
+        auto longAv = buildAndLayout(SkString("Roboto"), longText);
+        const auto& shortRuns = static_cast<ParagraphImpl*>(shortAv.get())->runs();
+        const auto& longRuns = static_cast<ParagraphImpl*>(longAv.get())->runs();
+        REPORTER_ASSERT(reporter, shortRuns.size() == 1 && longRuns.size() == 1);
+        if (shortRuns.size() == 1 && longRuns.size() == 1) {
+            const SkScalar shortPairAdv =
+                    shortRuns[0].positions()[1].fX - shortRuns[0].positions()[0].fX;
+            const SkScalar longPairAdv =
+                    longRuns[0].positions()[1].fX - longRuns[0].positions()[0].fX;
+            REPORTER_ASSERT(reporter,
+                            longPairAdv == shortPairAdv,
+                            "Roboto 'AV' A-advance above 10,240 UTF-16: long=%.9g vs short=%.9g",
+                            longPairAdv,
+                            shortPairAdv);
+        }
+    }
+
+    {
+        auto shortFi = buildAndLayout(SkString("Roboto"), "fi ");
+        std::string longText;
+        longText.reserve(kRepeats * 3);
+        for (size_t i = 0; i < kRepeats; ++i) {
+            longText += "fi ";
+        }
+        auto longFi = buildAndLayout(SkString("Roboto"), longText);
+        REPORTER_ASSERT(reporter,
+                        totalGlyphs(shortFi.get()) == 2 &&
+                                totalGlyphs(longFi.get()) == 2 * kRepeats,
+                        "Roboto 'fi ' glyph count: short=%zu, long=%zu (expected %zu)",
+                        totalGlyphs(shortFi.get()),
+                        totalGlyphs(longFi.get()),
+                        2 * kRepeats);
+    }
+
+    if (has_font_families({"Geeza Pro"})) {
+        // "سلام " is 5 UTF-16 code units; 2,120 * 5 = 10,600 UTF-16 code units
+        constexpr size_t kArabicRepeats = 2120;
+        const char* word = "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 ";
+        auto shortAr = buildAndLayout(SkString("Geeza Pro"), word);
+        std::string longArText;
+        longArText.reserve(kArabicRepeats * strlen(word));
+        for (size_t i = 0; i < kArabicRepeats; ++i) {
+            longArText += word;
+        }
+        auto longAr = buildAndLayout(SkString("Geeza Pro"), longArText);
+        REPORTER_ASSERT(reporter,
+                        totalGlyphs(longAr.get()) == kArabicRepeats * totalGlyphs(shortAr.get()),
+                        "Arabic joining glyph count above 10,240 UTF-16: long=%zu vs %zu * %zu",
+                        totalGlyphs(longAr.get()),
+                        kArabicRepeats,
+                        totalGlyphs(shortAr.get()));
     }
 }

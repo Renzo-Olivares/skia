@@ -457,13 +457,26 @@ void ParagraphImpl::applySpacingAndBuildClusterTable() {
         if (!fRuns[0].isCursiveScript()) {
             // Do not apply letter spacing for script languages (no exception here)
             if (fCoreTextShaped) {
-                // Runs carry the shift on as HarfBuzz's single run does, so LTR lines match
-                // KEEPER-DEBT: HarfBuzz's RTL run puts the last line first, so spaced RTL lines can
-                // differ in the last bit. Remove once HardBreak_LetterSpacedLinesExactlyAsHarfBuzz
-                // asserts RTL line widths instead of logging them
                 SkScalar shift = 0;
-                for (auto& run : fRuns) {
-                    shift = run.addLetterSpacesAfterGraphemes(style.getLetterSpacing(), shift);
+                if (fRuns[0].leftToRight()) {
+                    // Carry the accumulated spacing shift across hard-break runs in text order
+                    for (auto& run : fRuns) {
+                        shift = run.addLetterSpacesAfterGraphemes(style.getLetterSpacing(), shift);
+                    }
+                } else {
+                    // HarfBuzz shapes a single-run RTL paragraph from the last line to the first;
+                    // rebase the visual pen and space segments in reverse order to match its floats
+                    SkScalar penX = 0;
+                    for (int i = fRuns.size() - 1; i >= 0; --i) {
+                        Run& run = fRuns[i];
+                        const SkScalar delta = penX - run.posX(0);
+                        for (size_t k = 0; k <= run.size(); ++k) {
+                            run.addX(k, delta);
+                        }
+                        run.fOffset.fX = penX;
+                        penX = run.posX(run.size());
+                        shift = run.addLetterSpacesAfterGraphemes(style.getLetterSpacing(), shift);
+                    }
                 }
             } else {
                 fRuns[0].addLetterSpacesEvenly(style.getLetterSpacing());
