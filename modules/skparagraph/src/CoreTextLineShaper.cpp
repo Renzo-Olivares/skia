@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <utility>
 
 namespace skia {
@@ -30,11 +31,33 @@ namespace textlayout {
 namespace {
 
 // Writes each glyph's advance from CoreText's base advances, rounded to whole pixels when subpixel
-// is off (the meaning of SkFont::isSubpixel)
-static void coretext_advances(bool subpixel, const CGSize* advances, SkScalar* out, CFIndex count) {
+// is off (the meaning of SkFont::isSubpixel), and when splitOffsets is non-null moves half of each
+// spacing glyph's pair kerning (base advance minus nominal advance) onto the next glyph's advance
+// and x-offset so drawn x stays unchanged while the caret sits at kern/2
+static void coretext_advances(bool subpixel,
+                              const CGSize* nominal,
+                              const CGSize* advances,
+                              SkScalar* out,
+                              SkScalar* splitOffsets,
+                              CFIndex count) {
+    // Half a kerning pair would put the next glyph off the pixel grid
+    SkASSERT(subpixel || !splitOffsets);
+    SkASSERT(!splitOffsets || nominal);
+    SkScalar carry = 0;
     for (CFIndex k = 0; k < count; ++k) {
         const SkScalar advance = SkScalarFromCGFloat(advances[k].width);
-        out[k] = subpixel ? advance : SkScalarRoundToScalar(advance);
+        if (!splitOffsets) {
+            out[k] = subpixel ? advance : SkScalarRoundToScalar(advance);
+            continue;
+        }
+        splitOffsets[k] = carry;
+        out[k] = advance + carry;
+        carry = 0;
+        // CoreText kerns no pair across zero-advance glyphs or past the run end
+        if (advance != 0 && k + 1 < count && advances[k + 1].width != 0) {
+            carry = (advance - SkScalarFromCGFloat(nominal[k].width)) / 2;
+            out[k] -= carry;
+        }
     }
 }
 
@@ -298,6 +321,10 @@ void CoreTextLineShaper::ShapeAffix(const SkString& text,
     skia_private::AutoSTArray<16, CGSize> advances(totalGlyphs);
     skia_private::AutoSTArray<16, CGPoint> origins(totalGlyphs);
     skia_private::AutoSTArray<16, SkScalar> glyphAdvances(totalGlyphs);
+    // The part of a kerning pair moved into each glyph's offset, as in shapeTextRegion
+    skia_private::AutoSTArray<16, SkScalar> splitOffsets(totalGlyphs);
+    std::fill_n(splitOffsets.data(), totalGlyphs, 0.0f);
+    const bool affixHasTab = memchr(text.c_str(), '\t', text.size()) != nullptr;
     SkScalar totalAdvance = 0;
     CFIndex runStart = 0;
     for (CFIndex i = 0; i < runCount; ++i) {
@@ -312,9 +339,26 @@ void CoreTextLineShaper::ShapeAffix(const SkString& text,
                 ctRun, CFRangeMake(0, gc), advances.data() + runStart, origins.data() + runStart);
         // A zero-size affix keeps zero advances, as in shapeTextRegion
         if (!zeroSize) {
+            // Left-to-right subpixel runs without tabs split pair kerning as in shapeTextRegion
+            const bool splitKerning =
+                    font.isSubpixel() && !affixHasTab &&
+                    (CTRunGetStatus(ctRun) & kCTRunStatusRightToLeft) == 0;
+            skia_private::AutoSTArray<16, CGSize> nominal(splitKerning ? gc : 0);
+            if (splitKerning) {
+                const CTFontRef ctFont = (CTFontRef)CFDictionaryGetValue(
+                        CTRunGetAttributes(ctRun), kCTFontAttributeName);
+                SkASSERT(ctFont);
+                CTFontGetAdvancesForGlyphs(ctFont,
+                                           kCTFontOrientationHorizontal,
+                                           glyphs.data() + runStart,
+                                           nominal.data(),
+                                           gc);
+            }
             coretext_advances(font.isSubpixel(),
+                              splitKerning ? nominal.data() : nullptr,
                               advances.data() + runStart,
                               glyphAdvances.data() + runStart,
+                              splitKerning ? splitOffsets.data() + runStart : nullptr,
                               gc);
             for (CFIndex k = 0; k < gc; ++k) {
                 totalAdvance += glyphAdvances[runStart + k];
@@ -361,10 +405,11 @@ void CoreTextLineShaper::ShapeAffix(const SkString& text,
         for (CFIndex k = 0; k < gc; ++k) {
             const CFIndex g = outIdx + k;
             buffer.glyphs[g] = unresolvedRun ? 0 : glyphs[g];
-            // CoreText is y-up, Skia y-down
+            // CoreText is y-up, Skia y-down; splitOffsets restores drawn x after moving half a
+            // kerning pair onto this glyph's advance
             const CGPoint origin = zeroSize ? CGPointZero : origins[g];
-            const SkPoint offset =
-                    SkPoint::Make(SkScalarFromCGFloat(origin.x), -SkScalarFromCGFloat(origin.y));
+            const SkPoint offset = SkPoint::Make(SkScalarFromCGFloat(origin.x) + splitOffsets[g],
+                                                 -SkScalarFromCGFloat(origin.y));
             if (buffer.offsets) {
                 buffer.positions[g] = buffer.point + SkPoint::Make(penX, 0);
                 buffer.offsets[g] = offset;
@@ -765,6 +810,12 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
         skia_private::AutoSTArray<64, CGSize> advances(isFallback ? 0 : glyphCount);
         skia_private::AutoSTArray<64, CGPoint> origins(isFallback ? 0 : glyphCount);
         skia_private::AutoSTArray<64, CGGlyph> glyphBuffer(isFallback ? 0 : glyphCount);
+        // Only left-to-right subpixel runs split pair kerning; a tab's advance to its stop is not
+        // kerning, so runs containing a tab keep whole advances
+        const bool splitKerning =
+                !isFallback && !zeroSize && runIsLtr && font.isSubpixel() &&
+                !memchr(fParagraph->text().data() + runUtf8Range.start, '\t', runUtf8Range.width());
+        skia_private::AutoSTArray<64, SkScalar> splitOffsets(splitKerning ? glyphCount : 0);
         SkScalar runAdvanceX = 0;
 
         if (isFallback) {
@@ -806,12 +857,24 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
             if (zeroSize) {
                 std::fill_n(glyphAdvances.data(), glyphCount, 0.0f);
             } else {
+                skia_private::AutoSTArray<64, CGSize> nominal(splitKerning ? glyphCount : 0);
+                if (splitKerning) {
+                    CTFontGetAdvancesForGlyphs(ctFont,
+                                               kCTFontOrientationHorizontal,
+                                               glyphBuffer.data(),
+                                               nominal.data(),
+                                               glyphCount);
+                }
                 // KEEPER-DEBT: this keeps CoreText's advance to the next 28pt tab stop, where
                 // HarfBuzz gives U+0009 its hmtx advance; the stop counts from the CTLine start
                 // (hard break or placeholder), so after a soft wrap it is off the line's stops.
                 // Remove when tabs get the HarfBuzz advance or line-relative stops
-                coretext_advances(
-                        font.isSubpixel(), advances.data(), glyphAdvances.data(), glyphCount);
+                coretext_advances(font.isSubpixel(),
+                                  splitKerning ? nominal.data() : nullptr,
+                                  advances.data(),
+                                  glyphAdvances.data(),
+                                  splitKerning ? splitOffsets.data() : nullptr,
+                                  glyphCount);
             }
             for (CFIndex k = 0; k < glyphCount; ++k) {
                 // CoreText gives '\n' no advance, HarfBuzz the advance of the primary font's
@@ -898,9 +961,11 @@ bool CoreTextLineShaper::shapeTextRegion(TextRange regionRange, SkScalar& advanc
                 // into the offset as SkShaper's HarfBuzz runs put x_offset and y_offset there
                 positions[k] = SkPoint::Make(advanceX + penX, 0);
                 penX += glyphAdvances[k];
-                // CoreText is y-up, Skia y-down
-                offsets[k] = SkPoint::Make(SkScalarFromCGFloat(origin.x),
-                                           -SkScalarFromCGFloat(origin.y));
+                // CoreText is y-up, Skia y-down; splitOffsets restores drawn x after moving half
+                // a kerning pair onto this glyph's advance
+                offsets[k] = SkPoint::Make(
+                        SkScalarFromCGFloat(origin.x) + (splitKerning ? splitOffsets[k] : 0),
+                        -SkScalarFromCGFloat(origin.y));
                 clusterIndexes[k] = clusterBuffer[k];
                 if (glyphs[k] == 0) {
                     recordUnresolvedGlyph(glyphTextRange(k));

@@ -4878,6 +4878,132 @@ DEF_TEST(CoreTextPipeline_Kerning_PairNarrowerThanNominal, reporter) {
     }
 }
 
+// SH4: pair kerning splits across adjacent glyphs so the caret at index 1 sits at kern/2 inside
+// the kerned gap while keeping the second glyph's drawn x unchanged
+DEF_TEST(CoreTextPipeline_PairKerning_CaretAtMiddleOfKernedGap, reporter) {
+    auto fontCollection = test_font_collection();
+    for (const char* family :
+         {"Helvetica", "Avenir", ".AppleSystemUIFont", "Times New Roman", "Arial", "Futura"}) {
+        if (!has_font_families({family})) {
+            continue;
+        }
+        for (const char* text : {"AV", "To", "Wa"}) {
+            for (SkScalar fontSize : {12.0f, 17.3f, 24.0f}) {
+                auto paragraph =
+                        layout_single_style(fontCollection, family, text, fontSize, true);
+                REPORTER_ASSERT(reporter,
+                                static_cast<ParagraphImpl*>(paragraph.get())->isCoreTextShaped());
+                const std::vector<PaintedGlyph> glyphs = painted_glyphs(paragraph.get());
+                auto boxes = paragraph->getRectsForRange(
+                        0, 1, RectHeightStyle::kTight, RectWidthStyle::kTight);
+                REPORTER_ASSERT(reporter,
+                                glyphs.size() == 2 && boxes.size() == 1,
+                                "%s '%s' size=%g: %zu glyphs, %zu boxes",
+                                family,
+                                text,
+                                fontSize,
+                                glyphs.size(),
+                                boxes.size());
+                if (glyphs.size() != 2 || boxes.size() != 1) {
+                    continue;
+                }
+                // On a two-glyph pair, line width minus nominal sum isolates the pair's kerning
+                // independently of drawnX so we verify both drawnX preservation and caret split
+                const SkScalar pen = glyphs[0].drawnX + glyphs[0].nominal;
+                const SkScalar kern =
+                        paragraph->getLongestLine() - (glyphs[0].nominal + glyphs[1].nominal);
+                const SkScalar caret = boxes[0].rect.fRight;
+                REPORTER_ASSERT(reporter,
+                                kern < 0,
+                                "%s '%s' size=%g: kerning %g",
+                                family,
+                                text,
+                                fontSize,
+                                kern);
+                REPORTER_ASSERT(reporter,
+                                SkScalarNearlyEqual(glyphs[1].drawnX, pen + kern, 1e-3f),
+                                "%s '%s' size=%g: drawnX %.6f, expected %.6f",
+                                family,
+                                text,
+                                fontSize,
+                                glyphs[1].drawnX,
+                                pen + kern);
+                REPORTER_ASSERT(reporter,
+                                SkScalarNearlyEqual(caret, pen + kern / 2, 1e-3f) &&
+                                        pen + kern < caret && caret < pen,
+                                "%s '%s' size=%g: caret %.6f, pen %.6f, kerning %.6f",
+                                family,
+                                text,
+                                fontSize,
+                                caret,
+                                pen,
+                                kern);
+            }
+        }
+    }
+}
+
+// SH4: an ellipsis run shaped via ShapeAffix keeps pair kerning narrower than its nominal glyph
+// sum while drawing glyphs strictly left to right after splitting kerning offsets
+DEF_TEST(CoreTextPipeline_PairKerning_EllipsisKernedAndOrdered, reporter) {
+    auto fontCollection = test_font_collection();
+    for (const char* family : {"Helvetica Neue", "Times New Roman"}) {
+        if (!has_font_families({family})) {
+            continue;
+        }
+        for (const char* ellipsis : {"AV\xE2\x80\xA6", "To."}) {
+            for (SkScalar fontSize : {12.0f, 17.3f, 24.0f}) {
+                ParagraphStyle paragraphStyle;
+                paragraphStyle.setTextShapingEngine(TextShapingEngine::kCoreText);
+                paragraphStyle.setApplyRoundingHack(false);
+                paragraphStyle.setEllipsis(SkString(ellipsis));
+                paragraphStyle.setMaxLines(1);
+                TextStyle style;
+                style.setFontFamilies({SkString(family)});
+                style.setFontSize(fontSize);
+                ParagraphBuilderImpl builder(
+                        paragraphStyle, fontCollection, get_unicode(paragraphStyle));
+                builder.pushStyle(style);
+                builder.addText("AVATAR Wave To Yo, We'll Try P.J. Fay");
+                auto paragraph = builder.Build();
+                paragraph->layout(fontSize * 6);
+                auto lines = static_cast<ParagraphImpl*>(paragraph.get())->lines();
+                // No public API exposes the ellipsis run, which is the unit under test
+                const Run* run = lines.empty() ? nullptr : lines[0].ellipsis();
+                REPORTER_ASSERT(reporter, run && run->size() >= 1 && run->size() == 3,
+                                "%s '%s' size=%g: no ellipsis", family, ellipsis, fontSize);
+                if (!run || run->size() != 3) {
+                    continue;
+                }
+                SkScalar nominal[3] = {};
+                run->font().getWidths(run->glyphs(), nominal);
+                REPORTER_ASSERT(reporter,
+                                run->advance().fX < nominal[0] + nominal[1] + nominal[2],
+                                "%s '%s' size=%g: advance %g, nominal %g",
+                                family,
+                                ellipsis,
+                                fontSize,
+                                run->advance().fX,
+                                nominal[0] + nominal[1] + nominal[2]);
+                for (size_t i = 1; i < run->size(); ++i) {
+                    const SkScalar previous =
+                            run->positions()[i - 1].fX + glyph_offset(*run, i - 1).fX;
+                    const SkScalar drawn = run->positions()[i].fX + glyph_offset(*run, i).fX;
+                    REPORTER_ASSERT(reporter,
+                                    previous < drawn,
+                                    "%s '%s' size=%g glyph %zu: drawn at %g after %g",
+                                    family,
+                                    ellipsis,
+                                    fontSize,
+                                    i,
+                                    drawn,
+                                    previous);
+                }
+            }
+        }
+    }
+}
+
 // Hard-break line ends are compared with HarfBuzz, which needs HarfBuzz
 #if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ) && defined(SK_UNICODE_ICU_IMPLEMENTATION)
 // A primary font without U+000A: HarfBuzz keeps '\n' in it as .notdef, CoreText moves it to a
