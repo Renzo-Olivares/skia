@@ -6,6 +6,7 @@
  */
 #ifndef SkUnicode_DEFINED
 #define SkUnicode_DEFINED
+#include "include/core/SkFourByteTag.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkSpan.h"
 #include "include/core/SkString.h"
@@ -320,6 +321,19 @@ class SKUNICODE_API SkUnicode : public SkRefCnt {
         }
 
         virtual void reorderVisual(const BidiLevel runLevels[], int levelsCount, int32_t logicalFromVisual[]) = 0;
+
+        // The queries below come after every older virtual and are not pure, so subclasses built
+        // against the previous header keep their vtable layout and still compile
+
+        // Returns the ISO 15924 tag of the UAX #24 Script property of a code point: 'Zyyy' for
+        // Common, 'Zinh' for Inherited, and 'Zzzz' for unassigned or out-of-range values; the
+        // base implementation returns 'Zzzz'
+        virtual SkFourByteTag getScript(SkUnichar /*utf8*/) {
+            return SkSetFourByteTag('Z', 'z', 'z', 'z');
+        }
+        // Returns true for General_Category Mn (Nonspacing_Mark) and Me (Enclosing_Mark) marks
+        // that take no advance of their own; the base implementation returns false
+        virtual bool isNonSpacingMark(SkUnichar /*utf8*/) { return false; }
 };
 
 namespace sknonstd {

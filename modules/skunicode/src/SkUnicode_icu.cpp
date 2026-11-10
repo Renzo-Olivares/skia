@@ -4,6 +4,7 @@
 * Use of this source code is governed by a BSD-style license that can be
 * found in the LICENSE file.
 */
+#include "include/core/SkFourByteTag.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkSpan.h"
 #include "include/core/SkString.h"
@@ -27,6 +28,7 @@
 #include <unicode/uchar.h>
 #include <unicode/uloc.h>
 #include <unicode/umachine.h>
+#include <unicode/uscript.h>
 #include <unicode/utext.h>
 #include <unicode/utypes.h>
 
@@ -462,6 +464,31 @@ class SkUnicode_icu : public SkUnicode {
 
     bool isIdeographic(SkUnichar unichar) override {
         return sk_u_hasBinaryProperty(unichar, UCHAR_IDEOGRAPHIC);
+    }
+
+    SkFourByteTag getScript(SkUnichar unichar) override {
+        constexpr SkFourByteTag kUnknown = SkSetFourByteTag('Z', 'z', 'z', 'z');
+        if (unichar < 0 || unichar > 0x10FFFF) {
+            return kUnknown;
+        }
+        UErrorCode status = U_ZERO_ERROR;
+        UScriptCode script = sk_uscript_getScript(unichar, &status);
+        if (U_FAILURE(status)) {
+            return kUnknown;
+        }
+        const char* name = sk_uscript_getShortName(script);
+        if (!name || std::strlen(name) != 4) {
+            return kUnknown;
+        }
+        return SkSetFourByteTag(name[0], name[1], name[2], name[3]);
+    }
+
+    bool isNonSpacingMark(SkUnichar unichar) override {
+        if (unichar < 0 || unichar > 0x10FFFF) {
+            return false;
+        }
+        int32_t category = sk_u_getIntPropertyValue(unichar, UCHAR_GENERAL_CATEGORY);
+        return category == U_NON_SPACING_MARK || category == U_ENCLOSING_MARK;
     }
 
     bool isTabulation(SkUnichar utf8) override {

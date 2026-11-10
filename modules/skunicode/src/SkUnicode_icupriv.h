@@ -46,6 +46,7 @@
     SKICU_FUNC(uloc_forLanguageTag)   \
     SKICU_FUNC(uloc_getDefault)       \
     SKICU_FUNC(uscript_getScript)     \
+    SKICU_FUNC(uscript_getShortName)  \
     SKICU_FUNC(utext_close)           \
     SKICU_FUNC(utext_openUChars)      \
     SKICU_FUNC(utext_openUTF8)        \

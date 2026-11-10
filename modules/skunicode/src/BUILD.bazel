@@ -115,6 +115,7 @@ skia_filegroup(
     name = "apple_srcs",
     srcs = [
         "SkUnicode_apple.cpp",
+        "SkUnicode_hardcoded_tables.h",
     ],
     visibility = ["//modules/skunicode:__pkg__"],
 )

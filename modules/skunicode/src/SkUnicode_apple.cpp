@@ -5,6 +5,7 @@
  * found in the LICENSE file.
  */
 
+#include "include/core/SkFourByteTag.h"
 #include "include/core/SkSpan.h"
 #include "include/core/SkString.h"
 #include "include/core/SkTypes.h"
@@ -16,6 +17,7 @@
 #include "modules/skunicode/include/SkUnicode_apple.h"
 #include "modules/skunicode/src/SkBidiFactory_icu_subset.h"
 #include "modules/skunicode/src/SkUnicode_hardcoded.h"
+#include "modules/skunicode/src/SkUnicode_hardcoded_tables.h"
 #include "modules/skunicode/src/SkUnicode_icu_bidi.h"
 #include "src/core/SkBitmaskEnum.h"
 #include "src/core/SkNoDestructor.h"
@@ -40,7 +42,7 @@ void CFDefaultDeallocate(UniChar* ptr) { CFAllocatorDeallocate(kCFAllocatorDefau
 
 // CoreFoundation UTF-8 decoding always drops a leading EF BB BF as a byte order mark, but here
 // U+FEFF is a real ZWNBSP that owns code units. CFStringCreateWithCharactersNoCopy never strips it,
-// and CF would allocate a UTF-16 buffer for this non-ASCII text anyway, so it adopts ours instead
+// and CF allocates a UTF-16 buffer for this non-ASCII text, so it adopts ours instead
 SkUniqueCFRef<CFStringRef> MakeCFStringKeepingLeadingZwnbsp(std::string_view utf8) {
     SkASSERT(utf8.starts_with("\xEF\xBB\xBF"));
     std::string_view afterBom = utf8.substr(3);
@@ -453,12 +455,38 @@ private:
     Position fIndex = 0;
 };
 
+SkFourByteTag GetScript(SkUnichar unichar) {
+    using SkUnicodeTables::kScriptRanges;
+    if (unichar < 0 || unichar > 0x10FFFF) {
+        return SkSetFourByteTag('Z', 'z', 'z', 'z');
+    }
+    // The ranges start at U+0000, so the one before the first range past unichar holds it
+    static_assert(kScriptRanges.front().first == 0);
+    auto next = std::ranges::upper_bound(kScriptRanges, unichar, {}, [](const auto& range) {
+        return static_cast<SkUnichar>(range.first);
+    });
+    SkASSERT(next != kScriptRanges.begin());
+    return SkUnicodeTables::kScriptTags[(next - 1)->script];
+}
+
+bool IsNonSpacingMark(SkUnichar unichar) {
+    using SkUnicodeTables::kNonSpacingMarkRanges;
+    auto it = std::ranges::lower_bound(
+            kNonSpacingMarkRanges, unichar, {}, &std::pair<SkUnichar, SkUnichar>::second);
+    return it != kNonSpacingMarkRanges.end() && unichar >= it->first;
+}
+
 }  // namespace
 
 class SkUnicode_apple : public SkUnicodeHardCodedCharProperties {
 public:
     SkUnicode_apple() = default;
     ~SkUnicode_apple() override = default;
+
+    // Only kCoreText paragraphs read these, and they require this backend; the client and
+    // libgrapheme backends keep the base defaults so non-Apple builds omit the UCD tables
+    SkFourByteTag getScript(SkUnichar unichar) override { return GetScript(unichar); }
+    bool isNonSpacingMark(SkUnichar unichar) override { return IsNonSpacingMark(unichar); }
 
     std::unique_ptr<SkBidiIterator> makeBidiIterator(const uint16_t text[],
                                                      int count,
