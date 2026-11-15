@@ -47,7 +47,19 @@
 #include <vector>
 
 using namespace skia::textlayout;
-using namespace skia::textlayout::coretext_test;
+using skia::textlayout::coretext_test::coretext_line;
+using skia::textlayout::coretext_test::get_unicode;
+using skia::textlayout::coretext_test::has_font_families;
+using skia::textlayout::coretext_test::last_blob_x;
+using skia::textlayout::coretext_test::layout_ahem;
+using skia::textlayout::coretext_test::layout_single_style;
+using skia::textlayout::coretext_test::make_ahem_collection;
+using skia::textlayout::coretext_test::make_roboto_collection;
+using skia::textlayout::coretext_test::painted_glyphs;
+using skia::textlayout::coretext_test::PaintedGlyph;
+using skia::textlayout::coretext_test::PlainLine;
+using skia::textlayout::coretext_test::test_font_collection;
+using skia::textlayout::coretext_test::test_unicode;
 
 namespace {
 // Run::offsets() is empty when every glyph offset is zero, and has no entry for the end
@@ -229,9 +241,21 @@ DEF_TEST(CoreTextPipeline_FallbackBoxesSkipInvisibleCodepoints, reporter) {
     };
     const SkBitmap baseBitmap = paintTwoSpan(0);
     const std::pair<SkUnichar, bool> paintCases[] = {
-            {0x0001, false}, {0x0086, false}, {0x00AD, false}, {0x115F, false}, {0x200B, false},
-            {0x206A, false}, {0x3164, false}, {0xFEFF, false}, {0xFFA0, false}, {0xE0001, false},
-            {0x0E31, true},  {0x20DD, true},  {'C', true},     {0x001C, false}, {0x0085, false},
+            {0x0001, false},
+            {0x0086, false},
+            {0x00AD, false},
+            {0x115F, false},
+            {0x200B, false},
+            {0x206A, false},
+            {0x3164, false},
+            {0xFEFF, false},
+            {0xFFA0, false},
+            {0xE0001, false},
+            {0x0E31, true},
+            {0x20DD, true},
+            {'C', true},
+            {0x001C, false},
+            {0x0085, false},
     };
     for (const auto& [u, drawsBox] : paintCases) {
         const SkBitmap bitmap = paintTwoSpan(u);
@@ -409,7 +433,9 @@ public:
         uint32_t fGlyphCount;
     };
 
-    void drawTextBlob(const sk_sp<SkTextBlob>& blob, SkScalar x, SkScalar y,
+    void drawTextBlob(const sk_sp<SkTextBlob>& blob,
+                      SkScalar x,
+                      SkScalar y,
                       const SkPaintOrID&) override {
         // Every call is counted so an unexpected blob split is reported instead of overrunning
         // the fixed storage
@@ -430,8 +456,7 @@ public:
             }
         }
     }
-    void drawTextShadow(const sk_sp<SkTextBlob>&, SkScalar, SkScalar, SkColor,
-                        SkScalar) override {}
+    void drawTextShadow(const sk_sp<SkTextBlob>&, SkScalar, SkScalar, SkColor, SkScalar) override {}
     void drawRect(const SkRect&, const SkPaintOrID&) override {}
     void drawFilledRect(const SkRect&, const DecorationStyle&) override {}
     void drawPath(const SkPath&, const DecorationStyle&) override {}
@@ -561,8 +586,10 @@ DEF_TEST(CoreTextPipeline_ZeroFontSizeHasNoWidth, reporter) {
     builder.addText("abc");
     auto paragraph = builder.Build();
     paragraph->layout(500);
-    REPORTER_ASSERT(reporter, paragraph->getMaxIntrinsicWidth() == 0,
-                    "zero-size text is %g wide", paragraph->getMaxIntrinsicWidth());
+    REPORTER_ASSERT(reporter,
+                    paragraph->getMaxIntrinsicWidth() == 0,
+                    "zero-size text is %g wide",
+                    paragraph->getMaxIntrinsicWidth());
     // Zero sizes stay on CoreText so a build without HarfBuzz lays them out as well
     REPORTER_ASSERT(reporter, static_cast<ParagraphImpl*>(paragraph.get())->isCoreTextShaped());
 }
@@ -571,7 +598,9 @@ DEF_TEST(CoreTextPipeline_ZeroFontSizeHasNoWidth, reporter) {
 // invalid byte, so every CFRange still lands on its text; a mismatch would shift all runs
 DEF_TEST(CoreTextPipeline_InvalidUtf8MatchesIndexMap, reporter) {
     // A truncated three-byte sequence followed by ASCII
-    const char text[] = "\xE2\x82" "a";
+    const char text[] =
+            "\xE2\x82"
+            "a";
     const size_t bytes = sizeof(text) - 1;
     auto fontCollection = sk_make_sp<FontCollection>();
     fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
@@ -937,7 +966,7 @@ DEF_TEST(CoreTextPipeline_LineShaper_MarksTakeNoAdvance, reporter) {
 
 // On a line that starts its CTLine, a tab ends at CoreText's tab stop even when its glyph has no
 // hmtx advance, and the tab's cluster keeps that advance. This is CoreText's tab model, not
-// HarfBuzz parity: HarfBuzz gives the tab its hmtx advance (KEEPER-DEBT in shapeTextRegion)
+// HarfBuzz parity: HarfBuzz gives the tab its hmtx advance (TODO in extract_ctrun_glyphs)
 DEF_TEST(CoreTextPipeline_LineShaper_UnwrappedTabEndsAtCoreTextStop, reporter) {
     if (!has_font_families({"Galvji", "Zapfino"})) {
         return;
@@ -961,8 +990,8 @@ DEF_TEST(CoreTextPipeline_LineShaper_UnwrappedTabEndsAtCoreTextStop, reporter) {
                             glyph,
                             width);
 #if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ) && defined(SK_UNICODE_ICU_IMPLEMENTATION)
-            auto harfBuzz = layout_marked(TextShapingEngine::kDefault, family, text,
-                                          TextDirection::kLtr);
+            auto harfBuzz =
+                    layout_marked(TextShapingEngine::kDefault, family, text, TextDirection::kLtr);
             INFOF(reporter,
                   "%s: CoreText width %g, HarfBuzz %g\n",
                   family,
@@ -1046,11 +1075,8 @@ DEF_TEST(CoreTextPipeline_LineShaper_CursiveMarksDrawnOnTheirBase, reporter) {
                 base = &g;
             }
         }
-        REPORTER_ASSERT(reporter,
-                        base,
-                        "mark at %zu: no base glyph at %zu",
-                        mark.cluster,
-                        baseCluster);
+        REPORTER_ASSERT(
+                reporter, base, "mark at %zu: no base glyph at %zu", mark.cluster, baseCluster);
         if (!base) {
             continue;
         }
@@ -1082,9 +1108,24 @@ DEF_TEST(CoreTextPipeline_ControlCharacter_InvisibleAndZeroWidth, reporter) {
         const char* text;
         const char* withoutControl;
     };
-    for (const Case& c : {Case{"\x01", ""}, Case{"\x1F", ""}, Case{"a\x01" "b", "ab"},
-                          Case{"a\x1B" "b", "ab"}, Case{"a\x7F" "b", "ab"},
-                          Case{"a\xC2\x90" "b", "ab"}, Case{"\x01" "b", "b"}, Case{"a\x01", "a"},
+    for (const Case& c : {Case{"\x01", ""},
+                          Case{"\x1F", ""},
+                          Case{"a\x01"
+                               "b",
+                               "ab"},
+                          Case{"a\x1B"
+                               "b",
+                               "ab"},
+                          Case{"a\x7F"
+                               "b",
+                               "ab"},
+                          Case{"a\xC2\x90"
+                               "b",
+                               "ab"},
+                          Case{"\x01"
+                               "b",
+                               "b"},
+                          Case{"a\x01", "a"},
                           Case{"\xD7\x90\x01\xD7\x91", "\xD7\x90\xD7\x91"}}) {
         for (TextDirection direction : {TextDirection::kLtr, TextDirection::kRtl}) {
             auto ct = layout_ahem(fontCollection, c.text, direction, 0, 1000);
@@ -1104,8 +1145,12 @@ DEF_TEST(CoreTextPipeline_ControlCharacter_InvisibleAndZeroWidth, reporter) {
                     covered = cluster.textRange().end;
                 }
             }
-            REPORTER_ASSERT(reporter, covered == strlen(c.text), "len=%zu dir=%d: covered %zu",
-                            strlen(c.text), static_cast<int>(direction), covered);
+            REPORTER_ASSERT(reporter,
+                            covered == strlen(c.text),
+                            "len=%zu dir=%d: covered %zu",
+                            strlen(c.text),
+                            static_cast<int>(direction),
+                            covered);
             // An empty paragraph is never shaped and reports -1 unresolved glyphs
             const int expectedUnresolved = c.withoutControl[0] ? plain->unresolvedGlyphs() : 0;
             REPORTER_ASSERT(reporter,
@@ -1116,9 +1161,13 @@ DEF_TEST(CoreTextPipeline_ControlCharacter_InvisibleAndZeroWidth, reporter) {
                                     ct->getHeight() > 0,
                             "len=%zu dir=%d: w=%g without control w=%g valid=%d unresolved=%d "
                             "vs %d h=%g",
-                            strlen(c.text), static_cast<int>(direction),
-                            ct->getMaxIntrinsicWidth(), plain->getMaxIntrinsicWidth(),
-                            validGlyphs, ctImpl->unresolvedGlyphs(), expectedUnresolved,
+                            strlen(c.text),
+                            static_cast<int>(direction),
+                            ct->getMaxIntrinsicWidth(),
+                            plain->getMaxIntrinsicWidth(),
+                            validGlyphs,
+                            ctImpl->unresolvedGlyphs(),
+                            expectedUnresolved,
                             ct->getHeight());
         }
     }
@@ -1238,24 +1287,23 @@ DEF_TEST(CoreTextPipeline_Kerning_PairNarrowerThanNominal, reporter) {
         }
         for (const char* text : {"AV", "To"}) {
             for (SkScalar fontSize : {13.3f, 17.0f, 23.7f}) {
-                auto paragraph =
-                        layout_single_style(fontCollection, family, text, fontSize, true);
+                auto paragraph = layout_single_style(fontCollection, family, text, fontSize, true);
                 REPORTER_ASSERT(reporter,
                                 static_cast<ParagraphImpl*>(paragraph.get())->isCoreTextShaped());
                 SkFont font;
                 const std::vector<PaintedGlyph> glyphs = painted_glyphs(paragraph.get(), &font);
                 SkGlyphID cmap[2] = {};
                 font.textToGlyphs(text, 2, SkTextEncoding::kUTF8, cmap);
-                REPORTER_ASSERT(reporter,
-                                glyphs.size() == 2 && glyphs[0].id == cmap[0] &&
-                                        glyphs[1].id == cmap[1],
-                                "%s '%s' size=%g: %zu glyphs, cmap %u %u",
-                                family,
-                                text,
-                                fontSize,
-                                glyphs.size(),
-                                cmap[0],
-                                cmap[1]);
+                REPORTER_ASSERT(
+                        reporter,
+                        glyphs.size() == 2 && glyphs[0].id == cmap[0] && glyphs[1].id == cmap[1],
+                        "%s '%s' size=%g: %zu glyphs, cmap %u %u",
+                        family,
+                        text,
+                        fontSize,
+                        glyphs.size(),
+                        cmap[0],
+                        cmap[1]);
                 if (glyphs.size() != 2) {
                     continue;
                 }

@@ -21,16 +21,23 @@
 #include "include/core/SkTypes.h"
 #include "modules/skparagraph/include/DartTypes.h"
 #include "modules/skparagraph/include/FontCollection.h"
+#include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
+#include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skparagraph/src/CoreTextAttrStringBuilder.h"
+#include "modules/skparagraph/src/ParagraphBuilderImpl.h"
 #include "modules/skunicode/include/SkUnicode.h"
 #include "src/utils/mac/SkUniqueCFRef.h"
+#include "tests/Test.h"
 
+#include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace skia::textlayout::coretext_test {
@@ -49,8 +56,8 @@ sk_sp<FontCollection> test_font_collection();
 // its paragraphs
 SkUnicode* test_unicode();
 
-// The expectations name Apple system faces; the portable font manager (--nonativeFonts) has
-// none of them, so such tests skip instead of measuring substitutes
+// Tests that name Apple system faces skip under the portable font manager
+// (--nonativeFonts), which has none of them
 bool has_font_families(std::initializer_list<const char*> families);
 
 // PostScript name of typeface: names the exact face (weight, width, slant), unlike the family
@@ -113,6 +120,110 @@ struct PaintedGlyph {
 // CTFontGetAdvancesForGlyphs (font data including optical size and trak, which SkFont::getWidths
 // leaves out); when non-null, font receives the last glyph run's SkFont
 std::vector<PaintedGlyph> painted_glyphs(Paragraph* paragraph, SkFont* font = nullptr);
+
+// Apple's SkUnicode, which CoreText clients ship with; ICU only in builds without it
+sk_sp<SkUnicode> contract_unicode();
+
+// System fonts with fallback on, like a Flutter app without --use-test-fonts
+sk_sp<FontCollection> system_collection();
+
+// Only the resource fonts registered under their family names, fallback off, like a Flutter
+// test run with --use-test-fonts; nullptr when a resource is missing
+sk_sp<FontCollection> asset_collection(
+        std::initializer_list<std::pair<const char*, const char*>> resourceAndFamily);
+
+// ParagraphStyle on the CoreText engine with the rounding hack off, as Flutter sets it
+ParagraphStyle contract_paragraph_style();
+
+// Builder for multi-span paragraphs; finish them with layout_built
+std::unique_ptr<ParagraphBuilderImpl> contract_builder(const sk_sp<FontCollection>& fontCollection,
+                                                       const ParagraphStyle& style);
+
+// Builds and lays out at width. isCoreTextShaped is internal, but the contracts are about the
+// CoreText engine: a silent fallback to HarfBuzz would make every check below meaningless.
+// Empty text skips shaping on both engines
+std::unique_ptr<Paragraph> layout_built(skiatest::Reporter* reporter,
+                                        ParagraphBuilderImpl* builder,
+                                        SkScalar width);
+
+std::unique_ptr<Paragraph> layout_text(skiatest::Reporter* reporter,
+                                       const sk_sp<FontCollection>& fontCollection,
+                                       const ParagraphStyle& paragraphStyle,
+                                       const TextStyle& style,
+                                       std::string_view text,
+                                       SkScalar width);
+
+// TextStyle with only the family and the font size set; every other field keeps its default
+TextStyle contract_text_style(const char* family, SkScalar size);
+
+// A glyph as Paragraph::visit draws it: id, absolute position (run origin plus glyph position)
+// and the font of its run; lineNumber is the visit line, and utf8Start the UTF-8 index of its
+// cluster, which tells marks from their bases
+struct DrawnGlyph {
+    SkGlyphID glyph;
+    SkPoint position;
+    SkFont font;
+    int lineNumber;
+    uint32_t utf8Start;
+};
+
+// Every drawn glyph in paint order, including the ellipsis run
+std::vector<DrawnGlyph> drawn_glyphs(Paragraph* paragraph);
+
+// Glyph ids of drawn_glyphs, in the same paint order
+std::vector<SkGlyphID> drawn_glyph_ids(Paragraph* paragraph);
+
+// Paragraph::getLineMetrics, one entry per line
+std::vector<LineMetrics> line_metrics(Paragraph* paragraph);
+
+// Tight boxes of the UTF-16 range [start, end)
+std::vector<TextBox> tight_boxes(Paragraph* paragraph, size_t start, size_t end);
+
+// The one tight box of [start, end); reports a failure and gives nullopt when the range comes
+// back as several boxes or none, which the caller then skips
+std::optional<TextBox> single_tight_box(skiatest::Reporter* reporter,
+                                        Paragraph* paragraph,
+                                        size_t start,
+                                        size_t end);
+
+// Family name of the typeface the font draws with
+SkString family_name(const SkFont& font);
+
+// Design coordinate of axis on typeface; nullopt when the face has no such axis
+std::optional<SkScalar> axis_coordinate(const SkTypeface* typeface, SkFourByteTag axis);
+
+// The native side of the contracts: CTFontCreateWithName of family at size
+SkUniqueCFRef<CTFontRef> native_font(const char* family, SkScalar size);
+
+// The native oracle for line widths, line metrics and caret offsets, which the contracts may
+// compare for equality: one CTLine of text in font, with kCTTrackingAttributeName (as
+// NSTrackingAttributeName) when tracking is not 0, and an explicit base writing direction when
+// baseDirection is set; CoreText falls back on its own for characters the font lacks
+SkUniqueCFRef<CTLineRef> native_line(CTFontRef font,
+                                     std::string_view text,
+                                     SkScalar tracking,
+                                     std::optional<TextDirection> baseDirection = std::nullopt);
+
+// Typographic width of line, trailing whitespace included
+SkScalar native_line_width(CTLineRef line);
+
+// Ahem squares are one em wide, so the expected widths of the spacing contracts are exact sums
+constexpr SkScalar kAhemSize = 14;
+
+// contract_text_style with letterSpacing set
+TextStyle spaced_text_style(const char* family, SkScalar size, SkScalar letterSpacing);
+
+// LineMetrics::fWidth of the first line: no trailing spaces and, unlike the intrinsic widths,
+// not rounded to 0.01. -1 when the paragraph has no line, which no expected width matches
+SkScalar first_line_width(Paragraph* paragraph);
+
+// The font's own advance of a drawn glyph: SkFont::getWidths reads hmtx at the face's opsz and
+// never applies trak, kerning or letterSpacing
+SkScalar font_advance(const DrawnGlyph& glyph);
+
+// CoreText sums CGFloat advances while SkParagraph walks the pen in float; 1/4096 pt absorbs
+// that accumulation on these short lines
+constexpr SkScalar kNativeWidthTolerance = 1.0f / 4096;
 
 }  // namespace skia::textlayout::coretext_test
 

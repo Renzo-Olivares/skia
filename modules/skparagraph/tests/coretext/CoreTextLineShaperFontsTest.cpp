@@ -13,6 +13,7 @@
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkScalar.h"
+#include "include/core/SkSpan.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkString.h"
 #include "include/core/SkTypeface.h"
@@ -30,8 +31,11 @@
 #include "tests/Test.h"
 #include "tools/fonts/FontToolUtils.h"
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -1285,6 +1289,108 @@ DEF_TEST(CoreTextPipeline_HardBreak_PrimaryFontWithoutNewline, reporter) {
                 }
                 segStart = segEnd + 1;
             }
+        }
+    }
+}
+
+namespace {
+struct SegmentStyle {
+    SkScalar fontSize;
+    SkScalar letterSpacing;
+    const char* text;
+};
+
+// Glyphs drawn on each line of a kCoreText Roboto paragraph made of segments joined by '\n',
+// without the glyph of each '\n'
+std::vector<std::vector<DrawnGlyph>> drawn_lines(skiatest::Reporter* reporter,
+                                                 const sk_sp<FontCollection>& fontCollection,
+                                                 SkSpan<const SegmentStyle> segments) {
+    auto builder = contract_builder(fontCollection, contract_paragraph_style());
+    std::string text;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        TextStyle style;
+        style.setFontFamilies({SkString("Roboto")});
+        style.setFontSize(segments[i].fontSize);
+        style.setLetterSpacing(segments[i].letterSpacing);
+        builder->pushStyle(style);
+        std::string segmentText = segments[i].text;
+        if (i + 1 < segments.size()) {
+            segmentText += '\n';
+        }
+        builder->addText(segmentText.data(), segmentText.size());
+        builder->pop();
+        text += segmentText;
+    }
+    auto paragraph = layout_built(reporter, builder.get(), 1e6f);
+    std::vector<std::vector<DrawnGlyph>> lines(segments.size());
+    for (const DrawnGlyph& glyph : drawn_glyphs(paragraph.get())) {
+        if (text[glyph.utf8Start] != '\n' && glyph.lineNumber < SkToInt(lines.size())) {
+            lines[glyph.lineNumber].push_back(glyph);
+        }
+    }
+    return lines;
+}
+}  // namespace
+
+// Each '\n' segment draws as it does alone, even when a non-adjacent segment of the paragraph has
+// a nearly equal style: CoreTextRequestedFonts must not give it that segment's span font
+DEF_TEST(CoreTextPipeline_RequestedFonts_SegmentsShapeAsAlone, reporter) {
+    sk_sp<SkTypeface> roboto = ToolUtils::CreateTypefaceFromResource("fonts/Roboto-Regular.ttf");
+    if (!roboto) {
+        return;
+    }
+    auto fontCollection = make_roboto_collection(roboto);
+    // ParagraphCache compares font sizes only nearly, so a standalone 14.0001pt "fi" would get
+    // the cached 14pt layout
+    fontCollection->getParagraphCache()->turnOn(false);
+    // Roboto draws "fi" as one ligature glyph unless letterSpacing turns liga off; 1e-6 and
+    // 14.0001 are nearly equal to the 0 and 14 of the first segment, and the 20pt segments keep
+    // nearly equal ones from being merged with their neighbors. "سلام" falls back to a cursive
+    // font, whose letter-spaced font is made once and reused on the later segment
+    constexpr SegmentStyle kSegments[] = {
+            {14, 0, "fi"},
+            {14, 1.5f, "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 fi"},
+            {20, 0, "fi"},
+            {14, 1e-6f, "fi"},
+            {20, 0, "fi"},
+            {14.0001f, 0, "fi"},
+            {14, 1.5f, "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85 fi"},
+            {14, 0, "fi"},
+    };
+    const std::vector<std::vector<DrawnGlyph>> together =
+            drawn_lines(reporter, fontCollection, kSegments);
+    for (size_t i = 0; i < std::size(kSegments); ++i) {
+        skiatest::ReporterContext ctx(reporter, SkStringPrintf("segment %zu", i));
+        const std::vector<DrawnGlyph> alone =
+                drawn_lines(reporter, fontCollection, SkSpan(&kSegments[i], 1)).front();
+        REPORTER_ASSERT(reporter,
+                        together[i].size() == alone.size(),
+                        "got %zu glyphs, want %zu",
+                        together[i].size(),
+                        alone.size());
+        for (size_t k = 0; k < std::min(together[i].size(), alone.size()); ++k) {
+            const DrawnGlyph& got = together[i][k];
+            const DrawnGlyph& want = alone[k];
+            const SkTypefaceID gotFace = got.font.getTypeface()->uniqueID();
+            const SkTypefaceID wantFace = want.font.getTypeface()->uniqueID();
+            REPORTER_ASSERT(reporter,
+                            got.glyph == want.glyph && gotFace == wantFace,
+                            "glyph %zu: got id %d %s, want id %d %s",
+                            k,
+                            got.glyph,
+                            family_name(got.font).c_str(),
+                            want.glyph,
+                            family_name(want.font).c_str());
+            // Positions on a later line of one CTTypesetter differ in float rounding only
+            REPORTER_ASSERT(reporter,
+                            got.font.getSize() == want.font.getSize() &&
+                                    SkScalarNearlyEqual(got.position.fX, want.position.fX, 1e-4f),
+                            "glyph %zu: got size %.9g x %.9g, want size %.9g x %.9g",
+                            k,
+                            got.font.getSize(),
+                            got.position.fX,
+                            want.font.getSize(),
+                            want.position.fX);
         }
     }
 }
