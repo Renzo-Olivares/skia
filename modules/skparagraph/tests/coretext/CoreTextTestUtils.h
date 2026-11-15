@@ -42,16 +42,15 @@
 
 namespace skia::textlayout::coretext_test {
 
-// Each engine gets the SkUnicode its clients ship with: Apple's for CoreText, ICU for HarfBuzz.
-// A build lacking it yields null, which ParagraphBuilder::Build rejects instead of silently
-// laying out with another implementation
+// Each engine gets the SkUnicode its clients ship with: Apple's for CoreText, ICU for HarfBuzz
+// where the build has it
 sk_sp<SkUnicode> get_unicode(const ParagraphStyle& style);
 
 // TestFontMgr as the default manager with font fallback on: system fonts under --nativeFonts,
 // the portable test fonts otherwise, so system-font tests must skip via has_font_families
 sk_sp<FontCollection> test_font_collection();
 
-// Apple's SkUnicode, which CoreText clients ship with, or ICU, for tests that drive
+// Apple's SkUnicode, which CoreText clients ship with, for tests that drive
 // CoreTextAttrStringBuilder directly; never freed, like the SkUnicode a client keeps for all of
 // its paragraphs
 SkUnicode* test_unicode();
@@ -121,7 +120,8 @@ struct PaintedGlyph {
 // leaves out); when non-null, font receives the last glyph run's SkFont
 std::vector<PaintedGlyph> painted_glyphs(Paragraph* paragraph, SkFont* font = nullptr);
 
-// Apple's SkUnicode, which CoreText clients ship with; ICU only in builds without it
+// Apple's SkUnicode, which CoreText clients ship with and kCoreText requires; kDefault
+// contracts share it so both engines segment the same way
 sk_sp<SkUnicode> contract_unicode();
 
 // System fonts with fallback on, like a Flutter app without --use-test-fonts

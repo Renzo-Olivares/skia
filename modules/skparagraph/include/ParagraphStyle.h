@@ -24,6 +24,8 @@ namespace textlayout {
 enum class TextShapingEngine : uint8_t {
     // HarfBuzz; layout aborts on it in a skia_use_harfbuzz=false build
     kDefault = 0,
+    // Needs SkUnicodes::Apple where SK_PARAGRAPH_NATIVE_CORETEXT is defined: there
+    // ParagraphBuilder::Build returns nullptr with any other SkUnicode
     kCoreText = 1,
 };
 

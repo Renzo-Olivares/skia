@@ -23,9 +23,7 @@
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skparagraph/src/Run.h"
 #include "modules/skunicode/include/SkUnicode.h"
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 #include "modules/skunicode/include/SkUnicode_apple.h"
-#endif
 #if defined(SK_UNICODE_ICU_IMPLEMENTATION)
 #include "modules/skunicode/include/SkUnicode_icu.h"
 #endif
@@ -134,18 +132,14 @@ protected:
     }
 
     // Same pairing as SkParagraphFlutterBugsTest so slides and tests agree: Apple's SkUnicode
-    // for CoreText, ICU for HarfBuzz; ParagraphBuilder::Build rejects a missing one
+    // for CoreText, ICU for HarfBuzz where the build has it
     sk_sp<SkUnicode> getUnicode(TextShapingEngine engine) {
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
-        if (engine == TextShapingEngine::kCoreText) {
-            return SkUnicodes::Apple::Make();
+#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
+        if (engine == TextShapingEngine::kDefault) {
+            return SkUnicodes::ICU::Make();
         }
 #endif
-#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
-        return SkUnicodes::ICU::Make();
-#else
-        return nullptr;
-#endif
+        return SkUnicodes::Apple::Make();
     }
 
     void drawText(SkCanvas* canvas,

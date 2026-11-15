@@ -334,6 +334,9 @@ class SKUNICODE_API SkUnicode : public SkRefCnt {
         // Returns true for General_Category Mn (Nonspacing_Mark) and Me (Enclosing_Mark) marks
         // that take no advance of their own; the base implementation returns false
         virtual bool isNonSpacingMark(SkUnichar /*utf8*/) { return false; }
+        // Returns true only for SkUnicodes::Apple; kCoreText paragraphs require it (see
+        // ParagraphBuilder::Build)
+        virtual bool isApple() const { return false; }
 };
 
 namespace sknonstd {

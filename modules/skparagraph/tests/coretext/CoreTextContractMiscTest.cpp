@@ -29,6 +29,11 @@
 #include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skparagraph/src/ParagraphBuilderImpl.h"
 #include "modules/skparagraph/tests/coretext/CoreTextTestUtils.h"
+#include "modules/skunicode/include/SkUnicode.h"
+#include "modules/skunicode/include/SkUnicode_apple.h"
+#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
+#include "modules/skunicode/include/SkUnicode_icu.h"
+#endif
 #include "tests/Test.h"
 #include "tools/fonts/FontToolUtils.h"
 
@@ -588,6 +593,34 @@ DEF_TEST(CoreTextContract_DC2_PaintOnlyKeepsLayout, reporter) {
         }
     }
 }
+
+#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
+// kCoreText takes only SkUnicode_apple: ICU breaks and flags disagree with the runs and lines
+// CoreText makes, so Build returns null instead of laying out out of sync
+DEF_TEST(CoreTextContract_BuildRejectsNonAppleUnicode, reporter) {
+    auto fontCollection = sk_make_sp<FontCollection>();
+    fontCollection->setDefaultFontManager(ToolUtils::TestFontMgr());
+    struct Case {
+        TextShapingEngine engine;
+        bool apple;
+        bool built;
+    };
+    // kDefault keeps taking any SkUnicode: HarfBuzz gets its segmentation from it alone
+    constexpr std::array<Case, 3> kCases = {{{TextShapingEngine::kCoreText, true, true},
+                                             {TextShapingEngine::kCoreText, false, false},
+                                             {TextShapingEngine::kDefault, false, true}}};
+    for (const Case& c : kCases) {
+        skiatest::ReporterContext context(
+                reporter, SkStringPrintf("engine %d apple %d", (int)c.engine, c.apple));
+        ParagraphStyle style;
+        style.setTextShapingEngine(c.engine);
+        sk_sp<SkUnicode> unicode = c.apple ? SkUnicodes::Apple::Make() : SkUnicodes::ICU::Make();
+        auto builder = ParagraphBuilder::make(style, fontCollection, std::move(unicode));
+        builder->addText("abc");
+        REPORTER_ASSERT(reporter, (builder->Build() != nullptr) == c.built);
+    }
+}
+#endif  // defined(SK_UNICODE_ICU_IMPLEMENTATION)
 
 // IN4: SkUnicode rejects malformed UTF-8, so the paragraph gets no BiDi regions or code unit
 // flags; kCoreText then lays out no text, like kDefault, instead of lines without flags

@@ -72,7 +72,6 @@ SkPoint glyph_offset(const Run& run, size_t k) {
 // Tests assert the internal ParagraphImpl::isCoreTextShaped(): no public API reports the engine,
 // and a silent HarfBuzz fallback would pass every other assert
 
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 // U+FEFF at offset 0 is a ZWNBSP for SkUnicode, so with Apple's SkUnicode the kCoreText paragraph
 // gets the same graphemes and words as without it, one character later
 DEF_TEST(CoreTextPipeline_LeadingZwnbsp_BoundariesShiftByOneCharacter, reporter) {
@@ -130,7 +129,6 @@ DEF_TEST(CoreTextPipeline_LeadingZwnbsp_BoundariesShiftByOneCharacter, reporter)
                         zwnbspWord.end);
     }
 }
-#endif  // defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 
 // With fallback disabled every glyph is a .notdef box. Default_Ignorable code points (Hangul
 // fillers too) and the BN controls a CTLine drops add no width and, alone in a run, paint nothing;

@@ -689,9 +689,8 @@ DEF_TEST(CoreTextContract_SH12_SyntheticOnlyOnRequestedFace, reporter) {
     }
 }
 
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 // SH14: a leading U+FEFF is ZWNBSP, not a BOM: it stays with no width and shifts every UTF-16
-// index by one; SkUnicode_apple keeps it, ICU builds are not covered
+// index by one; SkUnicode_apple keeps it
 DEF_TEST(CoreTextContract_SH14_LeadingZwnbspStays, reporter) {
     sk_sp<FontCollection> ahem = asset_collection({{"fonts/ahem.ttf", "Ahem"}});
     if (!ahem) {
@@ -732,7 +731,6 @@ DEF_TEST(CoreTextContract_SH14_LeadingZwnbspStays, reporter) {
                     "got %zu",
                     glyphInfo.fGraphemeClusterTextRange.start);
 }
-#endif  // defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 
 // SH15: emoji, explicit or fallen back from Helvetica, take the native CTLine width with no
 // gap: wider than the point size only up to 25pt, and three emoji are exactly three times one

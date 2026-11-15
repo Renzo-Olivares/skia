@@ -56,6 +56,9 @@ public:
     virtual void addPlaceholder(const PlaceholderStyle& placeholderStyle) = 0;
 
     // Constructs a SkParagraph object that can be used to layout and paint the text to a SkCanvas.
+
+    // Returns nullptr for TextShapingEngine::kCoreText with an SkUnicode other than
+    // SkUnicodes::Apple in builds that define SK_PARAGRAPH_NATIVE_CORETEXT
     virtual std::unique_ptr<Paragraph> Build() = 0;
 
     virtual SkSpan<char> getText() = 0;

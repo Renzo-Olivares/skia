@@ -172,6 +172,15 @@ void ParagraphBuilderImpl::finalize() {
 }
 
 std::unique_ptr<Paragraph> ParagraphBuilderImpl::Build() {
+    SkASSERT_RELEASE(fUnicode);
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    // CoreText segments the text itself; another SkUnicode's breaks would disagree with its runs
+    // and lines
+    if (fParagraphStyle.getTextShapingEngine() == TextShapingEngine::kCoreText &&
+        !fUnicode->isApple()) {
+        return nullptr;
+    }
+#endif
     this->finalize();
     // Add one fake placeholder with the rest of the text
     this->addPlaceholder(PlaceholderStyle(), true);
@@ -179,7 +188,6 @@ std::unique_ptr<Paragraph> ParagraphBuilderImpl::Build() {
     fUTF8IndexForUTF16Index.clear();
     fUTF16IndexForUTF8Index.clear();
 
-    SkASSERT_RELEASE(fUnicode);
     return std::make_unique<ParagraphImpl>(
             fUtf8, fParagraphStyle, fStyledBlocks, fPlaceholders, fFontCollection, fUnicode);
 }

@@ -101,9 +101,8 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
           testonly = true
           sources = skparagraph_tests
 
-          # CoreTextPipelineTest constructs only SkUnicode_apple or SkUnicode_icu
-          if (skia_use_coretext_paragraph &&
-              (skia_use_apple_unicode || skia_use_icu)) {
+          # kCoreText builds paragraphs only with SkUnicode_apple
+          if (skia_use_coretext_paragraph && skia_use_apple_unicode) {
             sources += skparagraph_coretext_tests
           }
           if (!skia_use_harfbuzz ||
@@ -152,7 +151,7 @@ if (skia_enable_skparagraph && skia_enable_skshaper && skia_enable_skunicode &&
       if (skia_use_harfbuzz && (skia_use_icu || skia_use_libgrapheme)) {
         testonly = true
         sources = [ "slides/ParagraphSlide.cpp" ]
-        if (skia_use_coretext_paragraph) {
+        if (skia_use_coretext_paragraph && skia_use_apple_unicode) {
           sources += [ "slides/ParagraphBugsSlide.cpp" ]
         }
         deps = [

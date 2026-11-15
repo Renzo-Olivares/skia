@@ -398,7 +398,6 @@ DEF_TEST(CoreTextContract_HT5_RtlTrailingSpacesNoShift, reporter) {
     }
 }
 
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 // HT6: getWordBoundary gives the CFStringTokenizer word around each offset for every script,
 // including punctuation runs and CJK, the one rule Apple text views share (D19)
 DEF_TEST(CoreTextContract_HT6_WordBoundaryLikeCFStringTokenizer, reporter) {
@@ -470,7 +469,6 @@ DEF_TEST(CoreTextContract_HT6_WordBoundaryLikeCFStringTokenizer, reporter) {
                         end);
     }
 }
-#endif
 
 // HT7: line queries agree with LineMetrics, selection boxes tile the lines without vertical
 // gaps, and hit tests answer outside the paragraph and on an empty one

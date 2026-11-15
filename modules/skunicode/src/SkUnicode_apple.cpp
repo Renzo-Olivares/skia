@@ -483,6 +483,8 @@ public:
     SkUnicode_apple() = default;
     ~SkUnicode_apple() override = default;
 
+    bool isApple() const override { return true; }
+
     // Only kCoreText paragraphs read these, and they require this backend; the client and
     // libgrapheme backends keep the base defaults so non-Apple builds omit the UCD tables
     SkFourByteTag getScript(SkUnichar unichar) override { return GetScript(unichar); }

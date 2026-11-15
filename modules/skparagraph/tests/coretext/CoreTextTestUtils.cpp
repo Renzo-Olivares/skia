@@ -11,9 +11,7 @@
 #include "modules/skparagraph/include/TypefaceFontProvider.h"
 #include "modules/skparagraph/src/CoreTextFontRegistry.h"
 #include "modules/skparagraph/src/ParagraphImpl.h"
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
 #include "modules/skunicode/include/SkUnicode_apple.h"
-#endif
 #if defined(SK_UNICODE_ICU_IMPLEMENTATION)
 #include "modules/skunicode/include/SkUnicode_icu.h"
 #endif
@@ -26,16 +24,12 @@
 namespace skia::textlayout::coretext_test {
 
 sk_sp<SkUnicode> get_unicode(const ParagraphStyle& style) {
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
-    if (style.getTextShapingEngine() == TextShapingEngine::kCoreText) {
-        return SkUnicodes::Apple::Make();
+#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
+    if (style.getTextShapingEngine() == TextShapingEngine::kDefault) {
+        return SkUnicodes::ICU::Make();
     }
 #endif
-#if defined(SK_UNICODE_ICU_IMPLEMENTATION)
-    return SkUnicodes::ICU::Make();
-#else
-    return nullptr;
-#endif
+    return SkUnicodes::Apple::Make();
 }
 
 sk_sp<FontCollection> test_font_collection() {
@@ -45,11 +39,7 @@ sk_sp<FontCollection> test_font_collection() {
 }
 
 SkUnicode* test_unicode() {
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
     static SkUnicode* unicode = SkUnicodes::Apple::Make().release();
-#else
-    static SkUnicode* unicode = SkUnicodes::ICU::Make().release();
-#endif
     SkASSERT(unicode);
     return unicode;
 }
@@ -230,15 +220,7 @@ std::vector<PaintedGlyph> painted_glyphs(Paragraph* paragraph, SkFont* font) {
     return glyphs;
 }
 
-sk_sp<SkUnicode> contract_unicode() {
-#if defined(SK_UNICODE_APPLE_IMPLEMENTATION)
-    return SkUnicodes::Apple::Make();
-#elif defined(SK_UNICODE_ICU_IMPLEMENTATION)
-    return SkUnicodes::ICU::Make();
-#else
-    return nullptr;
-#endif
-}
+sk_sp<SkUnicode> contract_unicode() { return SkUnicodes::Apple::Make(); }
 
 sk_sp<FontCollection> system_collection() {
     auto fontCollection = sk_make_sp<FontCollection>();
