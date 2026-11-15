@@ -41,7 +41,10 @@ split_srcs_and_hdrs(
 skia_filegroup(
     name = "coretext_tests",
     srcs = [
+        "coretext/CoreTextFontRegistryTest.cpp",
         "coretext/CoreTextIndexMapTest.cpp",
+        "coretext/CoreTextTestUtils.cpp",
+        "coretext/CoreTextTestUtils.h",
     ],
     visibility = ["//modules/skparagraph:__pkg__"],
 )

@@ -4,8 +4,14 @@
 #include "include/core/SkTypeface.h"
 #include "include/private/SkMutex.h"
 #include "modules/skparagraph/include/Paragraph.h"
+#include "modules/skparagraph/src/FontCollectionFaceCache.h"
 #include "modules/skparagraph/src/ParagraphImpl.h"
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+#include "modules/skparagraph/src/CoreTextFontRegistry.h"
+#endif
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
 #include "modules/skshaper/include/SkShaper_harfbuzz.h"
+#endif
 #include "src/core/SkLRUCache.h"
 #include "src/core/SkTHash.h"
 
@@ -18,42 +24,6 @@ namespace {
 }
 namespace skia {
 namespace textlayout {
-
-struct FontCollection::FaceCache {
-    struct FamilyKey {
-        FamilyKey(const std::vector<SkString>& familyNames, SkFontStyle style, const std::optional<FontArguments>& args)
-                : fFamilyNames(familyNames), fFontStyle(style), fFontArguments(args) {}
-
-        FamilyKey() {}
-
-        std::vector<SkString> fFamilyNames;
-        SkFontStyle fFontStyle;
-        std::optional<FontArguments> fFontArguments;
-
-        bool operator==(const FamilyKey& other) const {
-            return fFamilyNames == other.fFamilyNames &&
-                   fFontStyle == other.fFontStyle &&
-                   fFontArguments == other.fFontArguments;
-        }
-
-        struct Hasher {
-            size_t operator()(const FamilyKey& key) const {
-                size_t hash = 0;
-                for (const SkString& family : key.fFamilyNames) {
-                    hash ^= std::hash<std::string>()(family.c_str());
-                }
-                return hash ^
-                       std::hash<uint32_t>()(key.fFontStyle.weight()) ^
-                       std::hash<uint32_t>()(key.fFontStyle.slant()) ^
-                       std::hash<std::optional<FontArguments>>()(key.fFontArguments);
-            }
-        };
-    };
-    // Synchronize fTypefaces inside the pimpl struct to preserve FontCollection's ABI layout
-    mutable SkMutex fMutex;
-    skia_private::THashMap<FamilyKey, std::vector<sk_sp<SkTypeface>>, FamilyKey::Hasher> fTypefaces
-            SK_GUARDED_BY(fMutex);
-};
 
 struct FontCollection::VariationCache {
     struct Key {
@@ -241,15 +211,9 @@ std::vector<sk_sp<SkTypeface>> FontCollection::findTypefaces(const std::vector<S
 
 std::vector<sk_sp<SkTypeface>> FontCollection::findTypefaces(const std::vector<SkString>& familyNames, SkFontStyle fontStyle, const std::optional<FontArguments>& fontArgs) {
     // Look inside the font collections cache first
-    FaceCache::FamilyKey familyKey(familyNames, fontStyle, fontArgs);
-    {
-        // Release fFaceCache->fMutex before matchTypeface and cloneTypeface so font manager
-        // queries do not block cache hits and cloneTypeface can lock fVariationCache safely
-        SkAutoMutexExclusive lock(fFaceCache->fMutex);
-        auto found = fFaceCache->fTypefaces.find(familyKey);
-        if (found) {
-            return *found;
-        }
+    FaceCache::FamilyKey familyKey{familyNames, fontStyle, fontArgs, /*coreText=*/false};
+    if (auto cached = fFaceCache->find(familyKey)) {
+        return std::move(*cached);
     }
 
     std::vector<sk_sp<SkTypeface>> typefaces;
@@ -287,13 +251,7 @@ std::vector<sk_sp<SkTypeface>> FontCollection::findTypefaces(const std::vector<S
         }
     }
 
-    // Reuse the cached vector if another thread populated familyKey while unlocked
-    SkAutoMutexExclusive lock(fFaceCache->fMutex);
-    if (auto* found = fFaceCache->fTypefaces.find(familyKey)) {
-        return *found;
-    }
-    fFaceCache->fTypefaces.set(familyKey, typefaces);
-    return typefaces;
+    return fFaceCache->insert(familyKey, std::move(typefaces));
 }
 
 sk_sp<SkTypeface> FontCollection::matchTypeface(const SkString& familyName, SkFontStyle fontStyle) {
@@ -469,7 +427,13 @@ void FontCollection::clearCaches() {
         fVariationCache->fTypefaces.reset();
     }
     fFallbackCache->reset();
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    CoreTextFontRegistry::Instance().clearCaches();
+#endif
+    // CoreText-only builds link no HarfBuzz and hold no HarfBuzz face cache to purge
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
     SkShapers::HB::PurgeCaches();
+#endif
 }
 
 }  // namespace textlayout
