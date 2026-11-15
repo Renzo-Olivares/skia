@@ -21,6 +21,13 @@ public:
 
     sk_sp<SkTypeface> CloneTypeface(const sk_sp<SkTypeface>& typeface) const;
 
+    // Only the axes the caller asked for, not a resolved design position: consumers that build
+    // a CTFontDescriptor instead of cloning a typeface must leave unrequested axes (opsz) alone
+    const std::vector<SkFontArguments::VariationPosition::Coordinate>& getVariationCoordinates()
+            const {
+        return fCoordinates;
+    }
+
     friend bool operator==(const FontArguments& a, const FontArguments& b);
     friend bool operator!=(const FontArguments& a, const FontArguments& b);
     friend struct std::hash<FontArguments>;

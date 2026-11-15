@@ -42,9 +42,13 @@ skia_filegroup(
 skia_filegroup(
     name = "coretext_srcs",
     srcs = [
+        "CoreTextAttrStringBuilder.cpp",
+        "CoreTextAttrStringBuilder.h",
         "CoreTextFontRegistry.cpp",
         "CoreTextFontRegistry.h",
         "CoreTextIndexMap.h",
+        "CoreTextSpanFonts.cpp",
+        "CoreTextSpanFonts.h",
         "CoreTextUtf8.h",
     ],
     visibility = ["//modules/skparagraph:__pkg__"],

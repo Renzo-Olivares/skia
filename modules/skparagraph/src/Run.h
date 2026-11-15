@@ -135,7 +135,10 @@ public:
         return SkRect::MakeXYWH(fOffset.fX, fOffset.fY, fAdvance.fX, fAdvance.fY);
     }
 
-    bool isCursiveScript() const;
+    bool isCursiveScript() const { return IsCursiveScript(fScript); }
+    // Scripts whose letters join, so spacing between them would break the joins; the CoreText
+    // builder asks it per script run, before any Run exists
+    static bool IsCursiveScript(SkFourByteTag script);
 
     void addSpacesAtTheEnd(SkScalar space, Cluster* cluster);
     SkScalar addLetterSpacesEvenly(SkScalar space, Cluster* cluster);

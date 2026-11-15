@@ -12,12 +12,25 @@
 // than one of them calls live here, the rest stay in their file. List a new file in
 // tests/BUILD.bazel (coretext_tests) and run make -C bazel generate_gni
 
+#include "include/core/SkRefCnt.h"
 #include "include/core/SkString.h"
 #include "include/core/SkTypeface.h"
+#include "modules/skparagraph/include/FontCollection.h"
+#include "modules/skparagraph/src/CoreTextAttrStringBuilder.h"
+#include "modules/skunicode/include/SkUnicode.h"
 
 #include <initializer_list>
 
 namespace skia::textlayout::coretext_test {
+
+// TestFontMgr as the default manager with font fallback on: system fonts under --nativeFonts,
+// the portable test fonts otherwise, so system-font tests must skip via has_font_families
+sk_sp<FontCollection> test_font_collection();
+
+// Apple's SkUnicode, which CoreText clients ship with, or ICU, for tests that drive
+// CoreTextAttrStringBuilder directly; never freed, like the SkUnicode a client keeps for all of
+// its paragraphs
+SkUnicode* test_unicode();
 
 // The expectations name Apple system faces; the portable font manager (--nonativeFonts) has
 // none of them, so such tests skip instead of measuring substitutes
