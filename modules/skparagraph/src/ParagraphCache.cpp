@@ -170,6 +170,7 @@ uint32_t ParagraphCacheKey::mixTextStyle(uint32_t hash, const TextStyle& style) 
     }
     hash = mix(hash, std::hash<std::optional<FontArguments>>()(style.getFontArguments()));
     hash = mix(hash, SkGoodHash()(style.getFontStyle()));
+    hash = mix(hash, SkGoodHash()(style.getTypeface() ? style.getTypeface()->uniqueID() : 0));
     hash = mix(hash, SkGoodHash()(relax(style.getFontSize())));
     hash = mix(hash, SkGoodHash()(static_cast<int>(style.getFontEdging())));
     hash = mix(hash, SkGoodHash()(static_cast<int>(style.getFontHinting())));
@@ -207,6 +208,7 @@ uint32_t ParagraphCacheKey::computeHash() const {
     hash = mix(hash, SkGoodHash()(fParagraphStyle.getReplaceTabCharacters() ? 1 : 0));
     hash = mix(hash, SkGoodHash()(fParagraphStyle.fakeMissingFontStyles() ? 1 : 0));
     hash = mix(hash, SkGoodHash()(fParagraphStyle.getLetterSpacingByCSSSpec() ? 1 : 0));
+    hash = mix(hash, SkGoodHash()(static_cast<uint8_t>(fParagraphStyle.getTextShapingEngine())));
 
     auto& strutStyle = fParagraphStyle.getStrutStyle();
     if (strutStyle.getStrutEnabled()) {
@@ -266,6 +268,10 @@ bool ParagraphCacheKey::operator==(const ParagraphCacheKey& other) const {
     // Letter spacing is applied to the cached runs
     if (fParagraphStyle.getLetterSpacingByCSSSpec() !=
         other.fParagraphStyle.getLetterSpacingByCSSSpec()) {
+        return false;
+    }
+
+    if (fParagraphStyle.getTextShapingEngine() != other.fParagraphStyle.getTextShapingEngine()) {
         return false;
     }
 

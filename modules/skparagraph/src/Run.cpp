@@ -229,6 +229,29 @@ SkScalar Run::addLetterSpacesEvenly(SkScalar space) {
     return shift;
 }
 
+SkScalar Run::addLetterSpacesAfterGraphemes(SkScalar space, SkScalar shift) {
+    SkScalar runStartShift = shift;
+    for (size_t i = 0; i < this->size(); ++i) {
+        this->addX(i, shift);
+        // Glyphs i and i + 1 share a grapheme when no grapheme starts between their text
+        // positions; RTL runs store glyphs in visual order, so the positions may go down
+        bool graphemeEnds = i + 1 == this->size();
+        if (!graphemeEnds) {
+            // Cluster indexes are relative to the run; the grapheme table is paragraph-wide
+            TextIndex from = std::min(globalClusterIndex(i), globalClusterIndex(i + 1));
+            TextIndex to = std::max(globalClusterIndex(i), globalClusterIndex(i + 1));
+            graphemeEnds = fOwner->findPreviousGraphemeBoundary(to) > from;
+        }
+        if (graphemeEnds) {
+            shift += space;
+        }
+    }
+    this->addX(this->size(), shift);
+    // The shift also holds the spacing of earlier runs, which is not part of this run's advance
+    fAdvance.fX += shift - runStartShift;
+    return shift;
+}
+
 SkScalar Run::addLetterSpacesEvenly(SkScalar space, Cluster* cluster) {
     // Offset all the glyphs in the cluster
     SkScalar shift = 0;
@@ -247,6 +270,17 @@ SkScalar Run::addLetterSpacesEvenly(SkScalar space, Cluster* cluster) {
     cluster->setHalfLetterSpacing(space / 2);
 
     return shift;
+}
+
+void Run::addLetterSpaceAfterCluster(SkScalar space, Cluster* cluster) {
+    // Keep internal glyph positions fixed so marks and ligature parts stay anchored; later
+    // clusters advance via ParagraphImpl's running shift, and only the run-end sentinel moves
+    if (this->size() == cluster->endPos()) {
+        this->addX(cluster->endPos(), space);
+    }
+    fAdvance.fX += space;
+    cluster->space(space);
+    cluster->setHalfLetterSpacing(space / 2);
 }
 
 bool Run::IsCursiveScript(SkFourByteTag script) {

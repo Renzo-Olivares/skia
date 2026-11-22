@@ -114,6 +114,11 @@ bool TextStyle::equals(const TextStyle& other) const {
     if (fFontArguments != other.fFontArguments) {
         return false;
     }
+    // ParagraphBuilderImpl::pushStyle deduplicates spans with operator==, so omitting fTypeface
+    // drops an explicit typeface when the remaining attributes match the open block
+    if (!SkTypeface::Equal(fTypeface.get(), other.fTypeface.get())) {
+        return false;
+    }
 
     return true;
 }
@@ -122,6 +127,8 @@ bool TextStyle::equalsByFonts(const TextStyle& that) const {
     // ParagraphCache reuses shaped runs on equality, so every field the shaper reads belongs here
     return !fIsPlaceholder && !that.fIsPlaceholder &&
            shapeWithSameFont(*this, that) &&
+           // Only the CoreText pipeline shapes with the explicit typeface; kFont matching skips it
+           SkTypeface::Equal(fTypeface.get(), that.fTypeface.get()) &&
            fFontFeatures == that.fFontFeatures &&
            nearlyEqual(fLetterSpacing, that.fLetterSpacing) &&
            nearlyEqual(fWordSpacing, that.fWordSpacing);

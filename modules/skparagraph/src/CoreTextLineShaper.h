@@ -4,6 +4,7 @@
 
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkScalar.h"
+#include "include/core/SkSpan.h"
 #include "include/core/SkTypes.h"
 #include "modules/skparagraph/include/DartTypes.h"
 #include "modules/skparagraph/include/TextStyle.h"
@@ -13,10 +14,14 @@
 
 #include <CoreText/CoreText.h>
 
+#include <memory>
+#include <string_view>
+
 namespace skia {
 namespace textlayout {
 
 class ParagraphImpl;
+class Run;
 
 // What shaping learns about a CTFont CoreText bound to a CTRun: a requested span font or a
 // cascade face CoreText chose. font retains the key: a fallback CTFont dies with its CTLine,
@@ -29,9 +34,10 @@ struct CoreTextBoundFont {
 };
 using CoreTextBoundFonts = skia_private::THashMap<CTFontRef, CoreTextBoundFont>;
 
-// Shapes a kCoreText paragraph into its Runs with one CTLine per hard-break segment. Every member
-// here writes Run or ParagraphImpl private state, which both grant to this class as a friend; steps
-// that need only public API live as free functions in CoreTextRunSteps.h
+// Shapes a kCoreText paragraph into its Runs with one CTLine per hard-break segment, and its
+// ellipses and hyphens. Every member here writes Run or ParagraphImpl private state, which both
+// grant to this class as a friend; steps that need only public API live as free functions in
+// CoreTextRunSteps.h and CoreTextHitTest.h
 class CoreTextLineShaper {
 public:
     // Binds the shaper to non-null paragraph; shape() populates its runs, font switches, and
@@ -45,7 +51,23 @@ public:
 
     size_t unresolvedGlyphs() const { return fUnresolvedGlyphs; }
 
+    // Shapes an ellipsis or hyphen in one CTLine (style's font, cascade, trak, features) into one
+    // Run of owner with clusterRun's line height, retrying with clusterRun's typeface; never uses
+    // SkShaper or the default font manager. LastResort or disallowed fallback glyphs become glyph
+    // 0, so the run reports itself unresolved
+    static std::unique_ptr<Run> ShapeEllipsis(ParagraphImpl* owner,
+                                              std::string_view text,
+                                              const TextStyle& style,
+                                              const Run& clusterRun,
+                                              uint8_t bidiLevel);
+
+    // Spaces runs that ParagraphImpl::runsDifferOnlyByHardBreaks accepted as one run, never inside
+    // a grapheme; moves glyph positions (RTL also rebases fOffset.fX) and builds no clusters
+    static void LetterSpaceRuns(SkSpan<Run> runs, SkScalar letterSpacing);
+
 private:
+    // Shapes one ellipsis or hyphen for ShapeEllipsis; defined in CoreTextEllipsisShaper.cpp
+    class EllipsisShaper;
     // Shapes one hard-break segment in one CTLine; defined in CoreTextSegmentShaper.cpp
     class SegmentShaper;
 

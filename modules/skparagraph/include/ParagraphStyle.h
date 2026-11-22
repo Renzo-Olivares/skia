@@ -18,6 +18,15 @@
 namespace skia {
 namespace textlayout {
 
+// Picks the shaper. kCoreText works only in builds that define SK_PARAGRAPH_NATIVE_CORETEXT;
+// other builds lay it out with HarfBuzz. Where it works, it never falls back to HarfBuzz: layout
+// aborts if CoreText cannot typeset a non-empty paragraph
+enum class TextShapingEngine : uint8_t {
+    // HarfBuzz; layout aborts on it in a skia_use_harfbuzz=false build
+    kDefault = 0,
+    kCoreText = 1,
+};
+
 struct StrutStyle {
     StrutStyle();
 
@@ -86,7 +95,8 @@ struct ParagraphStyle {
                this->fReplaceTabCharacters == rhs.fReplaceTabCharacters &&
                this->fFakeMissingFontStyles == rhs.fFakeMissingFontStyles &&
                this->fRenderSoftHyphens == rhs.fRenderSoftHyphens &&
-               this->fSoftHyphenString == rhs.fSoftHyphenString;
+               this->fSoftHyphenString == rhs.fSoftHyphenString &&
+               this->fTextShapingEngine == rhs.fTextShapingEngine;
     }
 
     const StrutStyle& getStrutStyle() const { return fStrutStyle; }
@@ -148,6 +158,11 @@ struct ParagraphStyle {
     // Like setEllipsis, also accepts UTF-16. The string is stored as UTF-8.
     void setSoftHyphenString(const std::u16string& value);
 
+    // Defaults to kDefault; paragraphs that differ only in it never share a ParagraphCache entry.
+    // See TextShapingEngine for when kCoreText still lays out with HarfBuzz
+    TextShapingEngine getTextShapingEngine() const { return fTextShapingEngine; }
+    void setTextShapingEngine(TextShapingEngine engine) { fTextShapingEngine = engine; }
+
 private:
     StrutStyle fStrutStyle;
     TextStyle fDefaultTextStyle;
@@ -165,6 +180,7 @@ private:
     bool fLetterSpacingByCSSSpec = false;
     bool fRenderSoftHyphens = false;
     SkString fSoftHyphenString = SkString("-");
+    TextShapingEngine fTextShapingEngine = TextShapingEngine::kDefault;
 };
 }  // namespace textlayout
 }  // namespace skia

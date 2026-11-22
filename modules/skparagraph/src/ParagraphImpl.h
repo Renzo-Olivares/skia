@@ -189,6 +189,9 @@ public:
     int32_t unresolvedGlyphs() override;
     std::unordered_set<SkUnichar> unresolvedCodepoints() override;
     void addUnresolvedCodepoints(TextRange textRange);
+    // True when the current runs come from CoreText (shaped here or restored from ParagraphCache);
+    // derived from the style and runs, so ParagraphImpl stores no backend state
+    bool isCoreTextShaped() const;
 
     void setState(InternalState state);
     sk_sp<SkPicture> getPicture() { return fPicture; }
@@ -245,7 +248,7 @@ public:
         return (fCodeUnitProperties[index] & property) == property;
     }
 
-    sk_sp<SkUnicode> getUnicode() { return fUnicode; }
+    sk_sp<SkUnicode> getUnicode() const { return fUnicode; }
 
 private:
     friend class ParagraphBuilder;
@@ -259,6 +262,15 @@ private:
     friend class CoreTextLineShaper;
 
     void computeEmptyMetrics();
+
+    // True when paragraphStyle() selects TextShapingEngine::kCoreText
+    bool usesCoreText() const {
+        return fParagraphStyle.getTextShapingEngine() == TextShapingEngine::kCoreText;
+    }
+
+    // True for one run, or for CoreText runs split only at hard breaks (same font, bidi level
+    // and script), which CoreTextLineShaper::LetterSpaceRuns spaces as one run
+    bool runsDifferOnlyByHardBreaks() const;
 
     // Input
     skia_private::TArray<StyleBlock<SkScalar>> fLetterSpaceStyles;

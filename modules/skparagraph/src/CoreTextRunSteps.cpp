@@ -2,6 +2,7 @@
 #include "modules/skparagraph/src/CoreTextRunSteps.h"
 
 #include "include/core/SkString.h"
+#include "include/ports/SkTypeface_mac.h"
 #include "include/private/SkTemplates.h"
 #include "include/private/SkTo.h"
 #include "modules/skparagraph/src/CoreTextFontRegistry.h"
@@ -76,7 +77,8 @@ bool cfstring_equals_skstring(CFStringRef cfStr, const SkString& skStr) {
 
 bool is_allowed_font(CTFontRef ctFont,
                      const std::vector<sk_sp<SkTypeface>>& allowedTypefaces,
-                     const std::vector<SkString>& fontFamilies) {
+                     const std::vector<SkString>& fontFamilies,
+                     const SkTypeface* extraAllowed) {
     SkASSERT(ctFont);
     // Both names come from the font's name table: a data-backed font with an empty one (a
     // subsetted web font) has no family name, so a null name is data, not a failure
@@ -100,6 +102,9 @@ bool is_allowed_font(CTFontRef ctFont,
                CoreTextFontRegistry::sameSystemFontDesign(
                        ctFamName.get(), tf, {tfFam.c_str(), tfFam.size()});
     };
+    if (extraAllowed && matchesTypeface(extraAllowed)) {
+        return true;
+    }
     for (const auto& tf : allowedTypefaces) {
         if (matchesTypeface(tf.get())) {
             return true;
@@ -298,6 +303,28 @@ void extract_ctrun_glyphs(CTRunRef ctRun,
     for (CFIndex k = 0; k < count; ++k) {
         offsetsOut[k] = glyph_draw_offset(origins[k], zeroSize, splitKerning ? splitOffsets[k] : 0);
     }
+}
+
+void NativeStrikeout(const SkFont& font, SkFontMetrics* metrics) {
+    CTFontRef ct = SkTypeface_GetCTFontRef(font.getTypeface());
+    // Unresolved fallback runs keep the caller's SkTypeface, which has no CTFontRef when backed
+    // by a non-Apple font manager; keep Skia's OS/2 strikeout metrics
+    if (!ct) {
+        return;
+    }
+    // CoreText maps a zero point size to 12pt, so a bound CTFont always has a positive size
+    const CGFloat ctSize = CTFontGetSize(ct);
+    SkASSERT(ctSize > 0);
+    const SkScalar scale = font.getSize() / SkScalarFromCGFloat(ctSize);
+    // TextKit on macOS and iOS ignores OS/2 yStrikeoutPosition/yStrikeoutSize (unscaled 1000-UPEM
+    // values in 2048-UPEM .SFNS-RegularItalic) and draws strikethrough at CTFont xHeight / 2
+    // above baseline with base thickness 0.044 * (ascent + descent + leading)
+    const SkScalar lineHeight =
+            SkScalarFromCGFloat(CTFontGetAscent(ct) + CTFontGetDescent(ct) + CTFontGetLeading(ct));
+    metrics->fStrikeoutPosition = -SkScalarFromCGFloat(CTFontGetXHeight(ct)) * 0.5f * scale;
+    metrics->fStrikeoutThickness = 0.044f * lineHeight * scale;
+    metrics->fFlags |= SkFontMetrics::kStrikeoutPositionIsValid_Flag |
+                       SkFontMetrics::kStrikeoutThicknessIsValid_Flag;
 }
 
 }  // namespace textlayout

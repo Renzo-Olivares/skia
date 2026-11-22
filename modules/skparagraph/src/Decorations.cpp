@@ -1,6 +1,10 @@
 // Copyright 2020 Google LLC
 #include "include/core/SkPathBuilder.h"
 #include "modules/skparagraph/src/Decorations.h"
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+#include "modules/skparagraph/src/CoreTextRunSteps.h"
+#include "modules/skparagraph/src/ParagraphImpl.h"
+#endif
 
 using namespace skia_private;
 
@@ -27,7 +31,7 @@ void Decorations::paint(ParagraphPainter* painter, const TextStyle& textStyle, c
     }
 
     // Get thickness and position
-    calculateThickness(textStyle, context.run->font().refTypeface());
+    calculateThickness(textStyle, *context.run);
 
     for (auto decoration : AllTextDecorations) {
         if ((textStyle.getDecorationType() & decoration) == 0) {
@@ -141,10 +145,16 @@ void Decorations::calculateGaps(const TextLine::ClipContext& context, const SkRe
 }
 
 // This is how flutter calculates the thickness
-void Decorations::calculateThickness(TextStyle textStyle, sk_sp<SkTypeface> typeface) {
-
-    textStyle.setTypeface(std::move(typeface));
+void Decorations::calculateThickness(TextStyle textStyle, const Run& run) {
+    textStyle.setTypeface(run.font().refTypeface());
     textStyle.getFontMetrics(&fFontMetrics);
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    // Skip OS/2 strikeout table reads when the decoration has no line-through
+    if (run.owner()->isCoreTextShaped() &&
+        (textStyle.getDecorationType() & TextDecoration::kLineThrough)) {
+        NativeStrikeout(run.font(), &fFontMetrics);
+    }
+#endif
 
     fThickness = textStyle.getFontSize() / 14.0f;
 

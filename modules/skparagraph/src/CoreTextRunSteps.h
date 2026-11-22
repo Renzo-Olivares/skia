@@ -3,6 +3,7 @@
 #define CoreTextRunSteps_DEFINED
 
 #include "include/core/SkFont.h"
+#include "include/core/SkFontMetrics.h"
 #include "include/core/SkPoint.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkScalar.h"
@@ -17,16 +18,19 @@
 #include <cstdint>
 #include <vector>
 
-// CTRun and style steps of the CoreTextLineShaper paragraph pipeline (CoreTextSegmentShaper.cpp)
+// CTRun and style steps that the paragraph (CoreTextSegmentShaper.cpp) and ellipsis
+// (CoreTextEllipsisShaper.cpp) pipelines of CoreTextLineShaper share
 namespace skia {
 namespace textlayout {
 
-// Checks whether ctFont shares the PostScript or family name of any entry in allowedTypefaces, or
-// matches any requested family name in fontFamilies. Both names come from the CGFont (CoreText
-// synthesizes a PostScript name for a nameless face), so a CTFont sharing a face shares its names
+// Checks whether ctFont shares the PostScript or family name of extraAllowed (when non-null) or
+// any entry in allowedTypefaces, or matches any requested family name in fontFamilies. Both names
+// come from the CGFont (CoreText synthesizes a PostScript name for a nameless face), so a CTFont
+// sharing a face shares its names
 bool is_allowed_font(CTFontRef ctFont,
                      const std::vector<sk_sp<SkTypeface>>& allowedTypefaces,
-                     const std::vector<SkString>& fontFamilies);
+                     const std::vector<SkString>& fontFamilies,
+                     const SkTypeface* extraAllowed = nullptr);
 
 // Returns the CTFont CoreText bound to ctRun during typesetting and font substitution
 CTFontRef ct_run_font(CTRunRef ctRun);
@@ -99,6 +103,11 @@ void extract_ctrun_glyphs(CTRunRef ctRun,
                           SkSpan<SkGlyphID> glyphsOut,
                           SkSpan<SkPoint> offsetsOut,
                           SkSpan<SkScalar> advancesOut);
+
+// Overwrites metrics' strikeout position (negative, above baseline) and base thickness with
+// native Apple TextKit values from font's bound CTFontRef and marks them valid; leaves metrics
+// untouched when font has no CTFontRef
+void NativeStrikeout(const SkFont& font, SkFontMetrics* metrics);
 
 }  // namespace textlayout
 }  // namespace skia

@@ -23,7 +23,13 @@
 #include "modules/skparagraph/src/ParagraphImpl.h"
 #include "modules/skparagraph/src/ParagraphPainterImpl.h"
 #include "modules/skshaper/include/SkShaper.h"
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
 #include "modules/skshaper/include/SkShaper_harfbuzz.h"
+#endif
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+#include "modules/skparagraph/src/CoreTextHitTest.h"
+#include "modules/skparagraph/src/CoreTextLineShaper.h"
+#endif
 #include "modules/skshaper/include/SkShaper_skunicode.h"
 #include "modules/skunicode/include/SkUnicode.h"
 
@@ -848,6 +854,7 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
                                            const SkString& ellipsis,
                                            const Cluster* cluster) {
 
+#if !defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
     class ShapeHandler final : public SkShaper::RunHandler {
     public:
         ShapeHandler(SkScalar lineHeight,
@@ -891,6 +898,7 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
         SkScalar fBaselineShift;
         SkString fEllipsis;
     };
+#endif
 
     const Run& run = cluster->run(owner);
     const BlockIndex blockIndex = AffixBlock(owner, blockRange, cluster);
@@ -913,6 +921,23 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
         }
     }
 
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+    // The CoreText cascade performs the fallback the attempts below emulate, and the default
+    // font manager they consult must stay out of CoreText paragraphs
+    if (owner->isCoreTextShaped()) {
+        return CoreTextLineShaper::ShapeEllipsis(
+                owner,
+                std::string_view(ellipsis.c_str(), ellipsis.size()),
+                textStyle,
+                run,
+                bidiLevel);
+    }
+#endif
+
+#if defined(SK_PARAGRAPH_DISABLE_HARFBUZZ)
+    // Every paragraph that reaches line breaking without HarfBuzz was shaped by CoreText
+    SK_ABORT("Ellipsis shaping of a non-CoreText paragraph needs HarfBuzz");
+#else
     auto shaped = [&](sk_sp<SkTypeface> typeface, sk_sp<SkFontMgr> fallback) -> std::unique_ptr<Run> {
         ShapeHandler handler(
                 run.heightMultiplier(), run.useHalfLeading(), run.baselineShift(), ellipsis);
@@ -994,6 +1019,7 @@ std::unique_ptr<Run> TextLine::ShapeString(ParagraphImpl* owner,
       }
     }
     return ellipsisRun;
+#endif
 }
 
 TextLine::ClipContext TextLine::measureTextInsideOneRun(TextRange textRange,
@@ -1754,6 +1780,15 @@ PositionWithAffinity TextLine::getGlyphPositionAtCoordinate(SkScalar dx) {
                 if (SkScalarNearlyEqual(context.clip.fRight, dx, 0.01f)) {
                     context.clip.fRight = dx;
                 }
+
+#if defined(SK_PARAGRAPH_NATIVE_CORETEXT)
+                // CoreText paragraphs snap carets to grapheme boundaries and skip folded
+                // Default_Ignorable code points while kDefault keeps legacy glyph-cluster steps
+                if (fOwner->isCoreTextShaped()) {
+                    keepLooking = HitTestRunSlice(*fOwner, context, offsetX, dx, &result);
+                    return keepLooking;
+                }
+#endif
 
                 if (dx <= context.clip.fLeft) {
                     // All the other runs are placed right of this one

@@ -44,8 +44,11 @@ skia_filegroup(
     srcs = [
         "CoreTextAttrStringBuilder.cpp",
         "CoreTextAttrStringBuilder.h",
+        "CoreTextEllipsisShaper.cpp",
         "CoreTextFontRegistry.cpp",
         "CoreTextFontRegistry.h",
+        "CoreTextHitTest.cpp",
+        "CoreTextHitTest.h",
         "CoreTextIndexMap.h",
         "CoreTextLineShaper.cpp",
         "CoreTextLineShaper.h",

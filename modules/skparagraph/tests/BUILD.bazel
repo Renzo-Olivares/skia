@@ -30,6 +30,7 @@ TESTS_FILES = [
     "SkShaperJSONWriter.cpp",
     "SkShaperJSONWriter.h",
     "SkShaperJSONWriterTest.cpp",
+    "coretext/CoreTextDisabledTest.cpp",
 ]
 
 split_srcs_and_hdrs(
@@ -44,6 +45,12 @@ skia_filegroup(
         "coretext/CoreTextAttrStringBuilderTest.cpp",
         "coretext/CoreTextFontRegistryTest.cpp",
         "coretext/CoreTextIndexMapTest.cpp",
+        "coretext/CoreTextLineShaperEllipsisTest.cpp",
+        "coretext/CoreTextLineShaperFontsTest.cpp",
+        "coretext/CoreTextLineShaperLetterSpacingTest.cpp",
+        "coretext/CoreTextLineShaperLinesTest.cpp",
+        "coretext/CoreTextLineShaperRunsTest.cpp",
+        "coretext/CoreTextLineShaperShapingTest.cpp",
         "coretext/CoreTextTestUtils.cpp",
         "coretext/CoreTextTestUtils.h",
     ],

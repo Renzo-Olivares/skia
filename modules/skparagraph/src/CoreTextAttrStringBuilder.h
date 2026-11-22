@@ -33,6 +33,10 @@ public:
     // and a span that follows the previous one and differs only in paint extends that one
     void addStyle(TextRange utf8Range, const TextStyle& style);
 
+    // Drops every recorded span so the same text can be styled again; the index map and scripts
+    // depend only on the text and stay
+    void clearStyles() { fStyles.clear(); }
+
     // Returns a non-null CFAttributedString with the base writing direction and, per recorded
     // span, its font, features, variations and locale. Span fonts come from fonts, which gets
     // any font made here

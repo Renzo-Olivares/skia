@@ -3,6 +3,7 @@
 
 #include "include/core/SkFont.h"
 #include "include/core/SkPoint.h"
+#include "include/core/SkSpan.h"
 #include "include/core/SkTypeface.h"
 #include "include/private/SkTo.h"
 #include "modules/skparagraph/src/CoreTextFontRegistry.h"
@@ -18,7 +19,8 @@
 #include <vector>
 
 // Paragraph-wide state of CoreText shaping. Each hard-break segment is shaped by a SegmentShaper
-// (CoreTextSegmentShaper.cpp) with the CTRun steps in CoreTextRunSteps.cpp
+// (CoreTextSegmentShaper.cpp), ellipses and hyphens by an EllipsisShaper
+// (CoreTextEllipsisShaper.cpp); the CTRun steps both share live in CoreTextRunSteps.cpp
 namespace skia {
 namespace textlayout {
 
@@ -130,6 +132,32 @@ void CoreTextLineShaper::recordUnresolvedGlyph(TextRange glyphRange) {
     }
     if (hasNonControl) {
         ++fUnresolvedGlyphs;
+    }
+}
+
+void CoreTextLineShaper::LetterSpaceRuns(SkSpan<Run> runs, SkScalar letterSpacing) {
+    // The only caller spaces runs only when shaping produced some
+    SkASSERT(!runs.empty());
+    SkScalar shift = 0;
+    if (runs[0].leftToRight()) {
+        // Carry the accumulated spacing shift across hard-break runs in text order
+        for (Run& run : runs) {
+            shift = run.addLetterSpacesAfterGraphemes(letterSpacing, shift);
+        }
+        return;
+    }
+    // HarfBuzz shapes a single-run RTL paragraph from the last line to the first;
+    // rebase the visual pen and space segments in reverse order to match its floats
+    SkScalar penX = 0;
+    for (int i = SkToInt(runs.size()) - 1; i >= 0; --i) {
+        Run& run = runs[i];
+        const SkScalar delta = penX - run.posX(0);
+        for (size_t k = 0; k <= run.size(); ++k) {
+            run.addX(k, delta);
+        }
+        run.fOffset.fX = penX;
+        penX = run.posX(run.size());
+        shift = run.addLetterSpacesAfterGraphemes(letterSpacing, shift);
     }
 }
 

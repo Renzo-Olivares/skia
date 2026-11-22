@@ -15,8 +15,9 @@ class Decorations {
     void paint(ParagraphPainter* painter, const TextStyle& textStyle, const TextLine::ClipContext& context, SkScalar baseline);
 
     private:
-
-    void calculateThickness(TextStyle textStyle, sk_sp<SkTypeface> typeface);
+    // Populates fFontMetrics from run's typeface (native strikeout metrics when the run's
+    // paragraph is CoreText-shaped) and sets fThickness scaled by decorationThicknessMultiplier
+    void calculateThickness(TextStyle textStyle, const Run& run);
     void calculatePosition(TextDecoration decoration, SkScalar ascent);
     void calculatePaint(const TextStyle& textStyle);
     void calculateWaves(const TextStyle& textStyle, SkRect clip);
